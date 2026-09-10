@@ -1,0 +1,8 @@
+# Engineering handbook
+
+Reset a password from Account Settings, then choose Security and Reset Password.
+The service sends a confirmation email after the reset is complete.
+
+For duplicate payment events, check whether the consumer acknowledged the message.
+If acknowledgement fails, retries can deliver the same event more than once.
+
