@@ -3,8 +3,10 @@ import socket
 import httpx
 import psycopg
 import redis
-from fastapi import FastAPI, Response, status
+from fastapi import FastAPI, HTTPException, Response, status
 
+from one_rag.retrieval import RetrievalService
+from one_rag.schemas import DocumentIn, Evidence, IngestedDocument, QueryIn, QueryResult
 from one_rag.settings import get_settings
 
 app = FastAPI(title="One RAG", version="0.1.0")
@@ -48,3 +50,19 @@ def readiness(response: Response) -> dict[str, object]:
     if not is_ready:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     return {"status": "ok" if is_ready else "unavailable", "checks": checks}
+
+
+@app.post("/v1/documents", response_model=IngestedDocument, status_code=status.HTTP_201_CREATED, tags=["rag"])
+def ingest_document(document: DocumentIn) -> IngestedDocument:
+    try:
+        chunks_indexed = RetrievalService().ingest(document.document_id, document.source, document.text)
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+    return IngestedDocument(document_id=document.document_id, source=document.source, chunks_indexed=chunks_indexed)
+
+
+@app.post("/v1/query", response_model=QueryResult, tags=["rag"])
+def query_documents(query: QueryIn) -> QueryResult:
+    evidence = [Evidence(**item) for item in RetrievalService().search(query.question, query.limit)]
+    context = "\n\n".join(f"[{item.source} | chunk {item.chunk_index}]\n{item.text}" for item in evidence)
+    return QueryResult(question=query.question, context=context, evidence=evidence)

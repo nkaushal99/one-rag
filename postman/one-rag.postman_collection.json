@@ -1,0 +1,80 @@
+{
+  "info": {
+    "_postman_id": "2b606d88-697f-4d43-9a80-a7a5e21e6a55",
+    "name": "One RAG",
+    "description": "Runnable local requests for the Stage 1 ingestion and semantic retrieval API.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://127.0.0.1:8000"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Readiness",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/health/ready"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Stage 1 RAG",
+      "item": [
+        {
+          "name": "Ingest account guide",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"document_id\": \"account-guide\",\n  \"source\": \"account-guide.txt\",\n  \"text\": \"Credentials can be modified from Account Settings. Contact support if you cannot access your account.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/documents"
+          },
+          "response": []
+        },
+        {
+          "name": "Query password help",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"question\": \"How can I reset my password?\",\n  \"limit\": 3\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/query"
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

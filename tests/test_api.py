@@ -1,0 +1,32 @@
+from unittest import TestCase
+from unittest.mock import patch
+
+from fastapi.testclient import TestClient
+
+from one_rag.api import app
+
+
+class FakeRetrievalService:
+    def ingest(self, document_id: str, source: str, text: str) -> int:
+        return 2
+
+    def search(self, question: str, limit: int) -> list[dict[str, object]]:
+        return [{"document_id": "handbook", "source": "handbook.txt", "chunk_index": 0, "text": "Change credentials in Account Settings.", "score": 0.91}]
+
+
+class ApiTests(TestCase):
+    def setUp(self) -> None:
+        self.client = TestClient(app)
+
+    @patch("one_rag.api.RetrievalService", FakeRetrievalService)
+    def test_ingest_document_returns_chunk_count(self) -> None:
+        response = self.client.post("/v1/documents", json={"document_id": "handbook", "source": "handbook.txt", "text": "First. Second."})
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["chunks_indexed"], 2)
+
+    @patch("one_rag.api.RetrievalService", FakeRetrievalService)
+    def test_query_returns_context_and_scored_evidence(self) -> None:
+        response = self.client.post("/v1/query", json={"question": "How do I change credentials?"})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("[handbook.txt | chunk 0]", response.json()["context"])
+        self.assertEqual(response.json()["evidence"][0]["score"], 0.91)
