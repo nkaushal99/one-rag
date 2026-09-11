@@ -23,5 +23,9 @@ class ChunkingTests(TestCase):
         self.assertEqual(len(chunk_text(text, strategy="paragraph")), 5)
         self.assertEqual(chunk_text(text, strategy="section"), ["# Architecture\n\nFirst paragraph.\n\nSecond paragraph.", "# Recovery\n\nRestore service."])
 
+    def test_section_chunking_keeps_numbered_lists_inside_their_top_level_section(self) -> None:
+        text = "1. RELIABILITY AND RETRY\nRetry details.\n1. This numbered list item stays here.\n\n2. RECOVERY\nRestore details."
+        self.assertEqual(chunk_text(text, strategy="section"), ["1. RELIABILITY AND RETRY\nRetry details.\n1. This numbered list item stays here.", "2. RECOVERY\nRestore details."])
+
     def test_token_count_is_visible_and_deterministic(self) -> None:
         self.assertEqual(token_count("One, two."), 4)

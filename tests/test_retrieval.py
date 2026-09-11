@@ -14,11 +14,15 @@ class DeterministicEmbedder:
 
 
 class RetrievalTests(TestCase):
-    def test_ingest_and_query_returns_cosine_ranked_evidence(self) -> None:
+    def service(self, strategy: str = "sentence") -> RetrievalService:
         service = RetrievalService.__new__(RetrievalService)
-        service.settings = Settings(qdrant_url=":memory:", collection="test_documents", chunking_strategy="sentence")
+        service.settings = Settings(qdrant_url=":memory:", collection="test_documents", chunking_strategy=strategy)
         service.client = QdrantClient(":memory:")
         service.embedder = DeterministicEmbedder()
+        return service
+
+    def test_ingest_and_query_returns_cosine_ranked_evidence(self) -> None:
+        service = self.service()
 
         indexed = service.ingest("account-guide", "account-guide.txt", "Credentials can be changed in Account Settings. Holidays are listed elsewhere.")
         results = service.search("Where can I change credentials?", limit=1)
@@ -27,3 +31,14 @@ class RetrievalTests(TestCase):
         self.assertEqual(results[0]["source"], "account-guide.txt")
         self.assertEqual(results[0]["chunk_index"], 0)
         self.assertGreater(results[0]["score"], 0.9)
+
+    def test_parent_child_search_returns_a_neighbor_from_the_same_parent(self) -> None:
+        service = self.service("parent_child")
+        indexed = service.ingest("guide", "guide.txt", "# Alpha\nAlpha credential detail. More alpha detail.\n\n# Beta\nBeta holiday detail. More beta detail.")
+        results = service.search("credential", limit=1, neighbor_count=1, include_parent_context=True)
+
+        self.assertEqual(indexed, 4)
+        self.assertEqual([result["retrieval_reason"] for result in results], ["match", "neighbor"])
+        self.assertEqual({result["parent_chunk_index"] for result in results}, {0})
+        self.assertEqual({result["child_chunk_index"] for result in results}, {0, 1})
+        self.assertTrue(all("Alpha" in str(result["parent_text"]) for result in results))

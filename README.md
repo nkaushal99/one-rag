@@ -66,7 +66,7 @@ Add your own UTF-8 `.txt` files under `documents/`, then run the index command a
 ## Stage 2: chunking experiment
 
 Set `CHUNKING_STRATEGY` in `.env` to `fixed`, `fixed_overlap`, `sentence`,
-`sentence_window`, `paragraph`, or `section`, then index again before comparing
+`sentence_window`, `paragraph`, `section`, or `parent_child`, then index again before comparing
 search results. `fixed` uses `FIXED_CHUNK_SIZE=500` lexical tokens; `fixed_overlap`
 reuses `FIXED_CHUNK_OVERLAP=100` tokens from the preceding chunk. The default
 `sentence_window` uses two sentences with one overlapping sentence.
@@ -84,6 +84,22 @@ that crosses a chunk boundary is visible. Read the evidence, not just the score:
 cosine similarity ranks relevance but is not an accuracy percentage. The
 evaluation collections (`chunking_eval_*`) are deliberately retained in Qdrant
 for inspection.
+
+`parent_child` treats each Markdown or numbered all-caps section as a parent and
+indexes overlapping two-sentence children. Search the small children, then add
+the surrounding child windows with `--neighbors 1`; use `--parent-context` to
+return the complete parent section. Try it against the included large synthetic
+handbook without mixing it into the normal collection:
+
+```bash
+export CHUNKING_STRATEGY="parent_child"
+export COLLECTION="parent_child_handbook"
+uv run --extra retrieval rag.py index scripts
+uv run --extra retrieval rag.py ask "What is the retry policy for a P1 incident?" --limit 1 --neighbors 1 --parent-context
+```
+
+The HTTP query endpoint accepts the equivalent `neighbor_count` (0–3) and
+`include_parent_context` fields.
 
 ## What to inspect
 

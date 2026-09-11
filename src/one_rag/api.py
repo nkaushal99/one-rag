@@ -63,6 +63,6 @@ def ingest_document(document: DocumentIn) -> IngestedDocument:
 
 @app.post("/v1/query", response_model=QueryResult, tags=["rag"])
 def query_documents(query: QueryIn) -> QueryResult:
-    evidence = [Evidence(**item) for item in RetrievalService().search(query.question, query.limit)]
-    context = "\n\n".join(f"[{item.source} | chunk {item.chunk_index}]\n{item.text}" for item in evidence)
+    evidence = [Evidence(**item) for item in RetrievalService().search(query.question, query.limit, query.neighbor_count, query.include_parent_context)]
+    context = "\n\n".join(f"[{item.source} | chunk {item.chunk_index}]\n{item.parent_text or item.text}" for item in evidence)
     return QueryResult(question=query.question, context=context, evidence=evidence)

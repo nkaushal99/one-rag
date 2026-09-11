@@ -24,6 +24,11 @@ The default remains `sentence_window` until the measured corpus says otherwise.
 The evaluator retains separate Qdrant collections named `chunking_eval_*` so the
 retrieved evidence remains inspectable.
 
+For the larger enterprise handbook, `parent_child` keeps each structural section
+as a parent while indexing overlapping two-sentence child windows. Optional
+neighbor retrieval expands a matched child only within its parent; optional
+parent context returns the full section after a child match.
+
 ## Consequences
 
 The experiment exposes answer completeness as well as ranking. The simple

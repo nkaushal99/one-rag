@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     fixed_chunk_overlap: int = 100
     sentence_window_size: int = 2
     sentence_window_overlap: int = 1
+    parent_child_window_size: int = 2
+    parent_child_window_overlap: int = 1
 
 
 @lru_cache

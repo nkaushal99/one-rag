@@ -10,7 +10,7 @@ class FakeRetrievalService:
     def ingest(self, document_id: str, source: str, text: str) -> int:
         return 2
 
-    def search(self, question: str, limit: int) -> list[dict[str, object]]:
+    def search(self, question: str, limit: int, neighbor_count: int = 0, include_parent_context: bool = False) -> list[dict[str, object]]:
         return [{"document_id": "handbook", "source": "handbook.txt", "chunk_index": 0, "text": "Change credentials in Account Settings.", "score": 0.91}]
 
 

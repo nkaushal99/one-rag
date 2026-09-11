@@ -1,0 +1,1577 @@
+
+ACME CLOUD PLATFORM HANDBOOK
+Version: 4.7
+Effective Date: 2026-08-15
+Classification: Internal Training / Synthetic Test Data
+Owner: Platform Engineering
+
+PURPOSE
+
+This handbook is a synthetic enterprise document created for testing retrieval-augmented generation (RAG) systems.
+It intentionally contains repeated concepts, similar terminology, version changes, exceptions, tables, incident notes,
+and cross-references so that retrieval quality can be evaluated under realistic conditions.
+
+Important: All companies, systems, teams, people, policies, incidents, and figures in this file are fictional.
+
+DOCUMENT CONVENTIONS
+
+1. "Platform" refers to the Acme Cloud Platform unless otherwise specified.
+2. "Production" means customer-facing production workloads.
+3. "Critical service" means a service with Tier-0 or Tier-1 classification.
+4. "Business hours" are 09:00 to 18:00 local time, Monday through Friday, excluding company holidays.
+5. "P1 incident" means a critical incident causing severe customer impact.
+6. "P2 incident" means a major incident with degraded service or limited customer impact.
+7. "Legacy" usually refers to systems that existed before the 2025 modernization program.
+8. Unless an exception is stated, newer policy sections override older historical notes.
+
+TABLE OF CONTENTS
+
+1. Platform Overview
+2. Service Tiers and Ownership
+3. Request Routing and API Gateway
+4. Authentication and Authorization
+5. Data Storage Standards
+6. Messaging and Event Processing
+7. Caching Strategy
+8. Reliability and Retry Policies
+9. Deployment and Release Management
+10. Observability and Alerting
+11. Incident Management
+12. Security and Data Handling
+13. Backup, Restore, and Disaster Recovery
+14. Cost Management
+15. Platform Runbooks
+16. Architecture Decision Records
+17. Historical Architecture Notes
+18. Incident Postmortems
+19. Frequently Asked Questions
+20. Appendix: Reference Tables and Glossary
+
+
+1. PLATFORM OVERVIEW
+
+The Acme Cloud Platform hosts customer-facing APIs, internal automation services, data-processing workloads,
+notification services, and analytics pipelines. The platform runs primarily in three regions:
+
+- us-east-1: primary region for North American customer traffic.
+- eu-west-1: primary region for European customer traffic.
+- ap-south-1: primary region for South Asian customer traffic.
+
+The platform follows a cell-based architecture. Each cell contains an API gateway layer, application services,
+a Redis cluster, a relational database cluster, and access to the regional Kafka deployment. Cells are designed
+to reduce blast radius. A customer tenant is assigned to a home cell, but some read-only requests may be served
+from replicated data in another cell.
+
+The platform processes approximately 65 million API requests per day across all regions. Traffic is uneven.
+Peak traffic typically occurs between 14:00 and 18:00 UTC. Roughly 72 percent of requests are reads and
+28 percent are writes.
+
+The platform modernization program started in 2025. Before modernization, most internal asynchronous workflows
+used RabbitMQ. Kafka became the default event backbone during the second half of 2025. RabbitMQ remains in use
+for two legacy systems: the Invoice Exporter and the Legacy Email Bridge.
+
+The platform uses Kubernetes for workload scheduling. Most services run between 3 and 40 replicas depending on
+traffic. Tier-0 services must run in at least two availability zones. Tier-1 services should run in at least two
+availability zones unless there is a documented exception.
+
+Key platform principles:
+
+- Durable state must be stored in a persistent database or object store.
+- Caches are never the source of truth.
+- Asynchronous workflows must be idempotent.
+- Customer-facing writes should use explicit idempotency keys whenever retries are possible.
+- Production services must emit structured logs, metrics, and distributed traces.
+- Critical state transitions must be auditable.
+- Configuration changes should be versioned.
+- Recovery procedures must be tested, not merely documented.
+
+The Customer Profile Service, Payment Orchestrator, Order Service, Notification Service, and Identity Service are
+considered high-importance workloads. The Payment Orchestrator is classified as Tier-0. Customer Profile and
+Order Service are Tier-1. Notification Service is Tier-2 because delayed notifications are acceptable for several
+minutes during incidents. Identity Service is Tier-0 because most authenticated traffic depends on it.
+
+
+2. SERVICE TIERS AND OWNERSHIP
+
+Services are classified into four operational tiers.
+
+Tier-0
+- Maximum tolerable unplanned downtime: 15 minutes per quarter.
+- Target availability: 99.99 percent.
+- On-call coverage: 24x7.
+- Required multi-AZ deployment: yes.
+- Required documented disaster recovery procedure: yes.
+- Required quarterly failover test: yes.
+
+Tier-1
+- Target availability: 99.95 percent.
+- On-call coverage: 24x7 for customer-facing services; business-hours for internal Tier-1 tools only with approval.
+- Multi-AZ deployment: required unless an exception is approved.
+- Disaster recovery test: at least twice per year.
+
+Tier-2
+- Target availability: 99.9 percent.
+- On-call coverage: team-defined.
+- Multi-AZ deployment: recommended but not mandatory.
+- Disaster recovery test: annually.
+
+Tier-3
+- No formal availability target.
+- Used for development tools, experiments, and non-critical batch jobs.
+
+Ownership rules:
+Every production service must have:
+- a primary owning team,
+- a backup owning team,
+- an escalation channel,
+- an operational runbook,
+- a data classification,
+- a service tier,
+- an SLO dashboard,
+- and at least one named technical owner.
+
+A service without an owner may not be promoted from staging to production.
+
+Ownership transfers must include runbook review, dashboard access, alert ownership, repository access, and a
+two-week transition period. During the two-week transition, the previous and new owner teams share incident
+responsibility.
+
+Exception:
+For company acquisitions, the transition period may be reduced to five business days with approval from the
+Director of Platform Engineering.
+
+The current owner of the Payment Orchestrator is the Commerce Platform team. The Identity Service is owned by
+the Core Identity team. The Notification Service is owned by Messaging Infrastructure.
+
+
+3. REQUEST ROUTING AND API GATEWAY
+
+All public API traffic enters through the regional edge layer. The request path is:
+
+Client
+-> CDN / DDoS Protection
+-> Regional Load Balancer
+-> API Gateway
+-> Service Mesh Ingress
+-> Application Service
+
+The API Gateway performs authentication token validation, coarse-grained rate limiting, request size checks,
+header normalization, and request correlation ID generation.
+
+The default maximum request body size is 5 MB. Larger uploads must use the object-storage upload flow.
+Multipart media uploads may be as large as 5 GB per object, but the API request itself should only carry
+metadata and pre-signed upload information.
+
+The gateway rate-limit policy is based on token buckets. Default public API limits are:
+- 100 requests per second per tenant for standard plans.
+- 500 requests per second per tenant for enterprise plans.
+- Burst capacity is 2x the steady-state per-second limit.
+- Some endpoints define stricter limits.
+
+The login endpoint is limited separately:
+- 20 attempts per minute per IP address.
+- 10 failed attempts per 15 minutes per account before a temporary lock is applied.
+
+Headers:
+Every request receives a request_id. If the client sends a valid x-request-id header, the gateway preserves it.
+Otherwise the gateway generates a UUIDv7 identifier.
+
+The x-tenant-id header is derived from the authenticated token for public traffic. Clients must not be trusted to
+select arbitrary tenants by sending this header directly.
+
+Timeouts:
+- Gateway connect timeout: 2 seconds.
+- Gateway upstream response timeout: 30 seconds.
+- Payment creation endpoint timeout: 15 seconds.
+- Report generation endpoint: synchronous request returns within 10 seconds with a job identifier; the report
+  itself runs asynchronously.
+
+The gateway retries only safe idempotent operations. It may retry GET and HEAD requests once on connection-level
+failures. It does not automatically retry POST requests unless that endpoint is explicitly declared safe and uses
+an idempotency key.
+
+
+4. AUTHENTICATION AND AUTHORIZATION
+
+The platform uses OAuth 2.1 and OpenID Connect for user-facing authentication.
+
+Access tokens:
+- Format: signed JWT.
+- Default lifetime: 15 minutes.
+- Refresh token lifetime: 30 days.
+- Machine-to-machine service tokens: default lifetime 60 minutes.
+- Tokens are signed using asymmetric keys rotated every 90 days.
+
+Key rotation:
+A new signing key is introduced while the previous key remains valid for a 24-hour overlap window.
+Services fetch public verification keys from the Identity Service and cache them for 10 minutes.
+
+Authorization:
+The platform combines role-based access control (RBAC) with scoped permissions. Roles include:
+- viewer,
+- operator,
+- developer,
+- admin,
+- billing_admin,
+- security_admin.
+
+Sensitive actions such as deleting a tenant, rotating encryption keys, or exporting regulated data require
+step-up authentication.
+
+Administrative session rules:
+- Administrative sessions expire after 30 minutes of inactivity.
+- Re-authentication is required before privileged operations if more than 10 minutes have passed since the last
+  strong authentication event.
+
+Service-to-service authentication:
+Services use workload identity issued through the service mesh. Static long-lived service credentials are
+prohibited for new services.
+
+Legacy exception:
+The Legacy Email Bridge still uses a static credential stored in the secrets manager. This credential rotates
+every 30 days. The exception expires on 2026-12-31.
+
+Authorization changes should propagate within 60 seconds. Emergency account suspensions propagate through a
+high-priority invalidation channel and should take effect within 10 seconds.
+
+
+5. DATA STORAGE STANDARDS
+
+The platform uses several storage technologies.
+
+PostgreSQL
+Used for strongly consistent transactional data, including:
+- payments,
+- orders,
+- subscriptions,
+- customer account metadata.
+
+DynamoDB-compatible key-value storage
+Used for high-volume key-based workloads such as:
+- session state,
+- idempotency records,
+- selected event cursors,
+- feature flag evaluation snapshots.
+
+Object Storage
+Used for:
+- exports,
+- attachments,
+- large reports,
+- backups,
+- archived logs,
+- model artifacts.
+
+Time-series database
+Used for:
+- operational metrics,
+- aggregated platform statistics,
+- selected high-cardinality observability data.
+
+Search cluster
+Used for:
+- full-text search,
+- customer-facing product search,
+- operational incident search.
+
+Relational database rules:
+- Every production table must have a primary key.
+- Foreign keys are encouraged for intra-service data where write throughput is not compromised.
+- Database migrations must be backward compatible during rolling deployments.
+- Dropping columns requires a two-release process.
+- Application code must not depend on implicit row ordering.
+- All schema migrations must be recorded in version control.
+
+Transaction guidance:
+Keep transactions short. External network calls must not occur inside database transactions.
+
+The Payment Orchestrator uses PostgreSQL with synchronous replication across availability zones.
+The Notification Service uses PostgreSQL for configuration and Kafka for message delivery events.
+Notification delivery history older than 30 days is archived to object storage.
+
+Customer Profile Service stores core customer records in PostgreSQL but keeps frequently accessed profile
+fragments in Redis for 15 minutes.
+
+Retention:
+- Payment records: 7 years.
+- Order records: 7 years.
+- Authentication audit logs: 2 years.
+- Standard application logs: 30 days hot, 365 days archived.
+- Distributed traces: 14 days by default.
+- P1 incident artifacts: 3 years.
+
+
+6. MESSAGING AND EVENT PROCESSING
+
+Kafka is the standard event backbone for new asynchronous workflows.
+
+Regional clusters:
+- one Kafka cluster per major production region,
+- replication factor 3,
+- minimum in-sync replicas 2 for critical topics,
+- acks=all for critical producer writes.
+
+Partitioning:
+Events that require per-entity ordering should be partitioned by the entity identifier.
+Examples:
+- order events -> order_id,
+- payment events -> payment_id,
+- shipment events -> shipment_id,
+- tenant configuration changes -> tenant_id.
+
+Ordering is guaranteed only within a partition.
+
+Consumer behavior:
+Consumers must be idempotent because duplicate delivery is possible.
+Offsets should be committed only after processing is complete or after the result is durably recorded.
+
+Retry strategy:
+The standard Kafka processing retry policy is:
+- immediate retry: 2 attempts in-process,
+- retry topic attempts: 3 additional attempts,
+- delays: 10 seconds, 1 minute, and 5 minutes,
+- after those attempts, send to a dead-letter topic.
+
+This means the standard pipeline may attempt processing up to 6 total times if the original attempt is included:
+1 original + 2 immediate retries + 3 retry-topic attempts.
+
+Important exception:
+Payment settlement events use a stricter controlled retry policy:
+- no in-process retry after an ambiguous external processor response,
+- up to 5 scheduled retries over 30 minutes,
+- reconciliation runs independently every 15 minutes.
+
+The payment workflow therefore must not be described as following the generic "3 retry" policy.
+
+RabbitMQ:
+Before 2025, RabbitMQ was the main asynchronous messaging platform. It remains only for:
+- Invoice Exporter,
+- Legacy Email Bridge.
+
+New systems must not adopt RabbitMQ without Architecture Review Board approval.
+
+Outbox pattern:
+Services that atomically update business state and publish events should write an outbox record in the same
+database transaction. A publisher or CDC pipeline then delivers the event to Kafka.
+
+Typical flow:
+Application transaction
+-> business table update
+-> outbox insert
+-> commit
+-> CDC/outbox publisher
+-> Kafka
+-> consumer
+-> downstream state update
+
+The outbox publisher may produce duplicate events. Consumers must use event_id or another durable idempotency key.
+
+
+7. CACHING STRATEGY
+
+Redis is the standard shared caching system.
+
+General rules:
+- Cache entries must have a TTL unless an explicit exception is documented.
+- Caches must not be treated as durable storage.
+- Cache failures should usually degrade performance rather than correctness.
+- Sensitive values must be encrypted where appropriate.
+- Cache keys must include tenant scope when tenant data is involved.
+
+Typical TTLs:
+- customer profile fragment: 15 minutes,
+- product details: 5 minutes,
+- feature flag snapshot: 60 seconds,
+- permission evaluation: 30 seconds,
+- public catalog metadata: 30 minutes,
+- exchange-rate cache: 10 minutes.
+
+Cache invalidation:
+Critical updates may use explicit invalidation events. Non-critical data may rely on TTL expiration.
+
+Cache-aside is the preferred access pattern:
+1. Read cache.
+2. On miss, read the database.
+3. Populate cache.
+4. Return result.
+
+Writes:
+The source-of-truth database is written first. Cache is then invalidated or updated asynchronously.
+
+Stampede protection:
+For hot keys, services should use request coalescing or a distributed single-flight mechanism. TTL jitter of up to
+10 percent should be applied to large groups of similar keys.
+
+Negative caching:
+"Not found" results may be cached for short periods, typically 10 to 30 seconds, where safe.
+
+The Customer Profile Service uses 15-minute cache entries but publishes invalidation events on direct customer
+profile edits. This means a profile edit should usually propagate faster than the TTL.
+
+The Product Catalog Service uses a 5-minute cache and does not publish invalidations for every metadata change.
+
+
+8. RELIABILITY AND RETRY POLICIES
+
+Retries must be bounded and use exponential backoff with jitter.
+
+HTTP client defaults:
+- connect timeout: 2 seconds,
+- request timeout: 5 seconds for internal synchronous calls,
+- maximum 2 retries for idempotent requests,
+- backoff: 100 ms then 500 ms plus jitter.
+
+Do not retry:
+- validation errors,
+- authorization failures,
+- deterministic business-rule failures,
+- requests known to have succeeded.
+
+Retry carefully:
+- timeouts after non-idempotent writes,
+- ambiguous responses from payment processors,
+- operations where duplicate execution causes side effects.
+
+Circuit breakers:
+Open after a configured error threshold. Default threshold is 50 percent failures over a rolling 20-request
+window, provided at least 20 requests have occurred. The default open interval is 30 seconds.
+
+Bulkheads:
+Tier-0 services must isolate major dependency pools so that one degraded integration cannot consume all worker
+threads.
+
+Idempotency:
+Public write APIs should accept an idempotency key when callers may retry. The default idempotency retention is
+24 hours.
+
+Payment creation idempotency keys are retained for 7 days because merchants may replay requests after delayed
+network recovery.
+
+Notification send idempotency keys are retained for 48 hours.
+
+Important distinction:
+An HTTP retry count is not the same as a Kafka event retry count. The standard HTTP policy allows at most
+2 retries after the initial attempt for qualifying calls. The standard Kafka consumer pipeline can perform up to
+6 total attempts including the original processing attempt.
+
+Fail-open vs fail-closed:
+- Authorization: fail closed.
+- Payment consistency checks: fail closed.
+- Rate limiting: standard customer traffic may fail open for up to 60 seconds if the shared limiter is unavailable.
+- Security abuse protection: fail closed for high-risk endpoints.
+
+
+9. DEPLOYMENT AND RELEASE MANAGEMENT
+
+Production deployments use a progressive rollout.
+
+Default rollout:
+1. Deploy to staging.
+2. Run automated smoke tests.
+3. Deploy to 5 percent canary.
+4. Observe for 15 minutes.
+5. Increase to 25 percent.
+6. Observe for 15 minutes.
+7. Increase to 50 percent.
+8. Observe for 15 minutes.
+9. Complete rollout to 100 percent.
+
+Tier-0 exception:
+Tier-0 services require at least 30 minutes of observation before moving from 25 percent to 50 percent unless an
+incident commander approves acceleration during an emergency fix.
+
+Rollback triggers include:
+- error rate increases by more than 2 percentage points,
+- p99 latency increases by more than 30 percent,
+- saturation exceeds defined safe thresholds,
+- correctness alarms fire,
+- dependency failure rate materially worsens.
+
+Deployment freeze:
+Routine production deployments are frozen from December 20 through January 2. Emergency security fixes and
+P1 incident remediations may still be deployed with approval.
+
+Database migrations:
+Expand-and-contract is required for incompatible schema changes.
+
+Feature flags:
+High-risk functionality should be gated behind feature flags. Flags must have:
+- owner,
+- description,
+- creation date,
+- expected removal date.
+
+Temporary feature flags older than 90 days should be reviewed.
+
+The platform performs approximately 120 production deployments per week across all teams.
+
+
+10. OBSERVABILITY AND ALERTING
+
+Every production service must emit:
+- structured logs,
+- metrics,
+- distributed traces,
+- health checks.
+
+Core service metrics:
+- request rate,
+- error rate,
+- latency,
+- saturation.
+
+SLO burn-rate alerts are preferred over single-threshold availability alarms.
+
+Latency targets:
+Public API gateway:
+- p50 under 120 ms,
+- p95 under 400 ms,
+- p99 under 1.2 seconds for ordinary synchronous endpoints.
+
+Payment creation:
+- p95 under 1.5 seconds when the external processor responds normally.
+
+Customer profile reads:
+- p95 under 250 ms.
+
+Metrics retention:
+- raw high-resolution metrics: 15 days,
+- 5-minute aggregates: 13 months,
+- daily aggregates: 3 years.
+
+Trace sampling:
+Head sampling defaults to 10 percent for ordinary successful traffic.
+Errors and requests slower than 2 seconds are always sampled when possible.
+
+For Payment Orchestrator, trace sampling is 100 percent for failed payment attempts and 25 percent for successful
+payment attempts.
+
+Log levels:
+DEBUG logs are disabled in production by default.
+Temporary debug logging may be enabled for up to 30 minutes during active troubleshooting.
+
+Alert quality:
+Every paging alert must have:
+- clear summary,
+- owning service,
+- severity,
+- dashboard link,
+- runbook link,
+- likely customer impact.
+
+Alerts without actionability should not page.
+
+
+11. INCIDENT MANAGEMENT
+
+Incident severities:
+
+P1
+- Widespread outage, severe security incident, critical payment failure, or data-loss risk.
+- Acknowledge within 5 minutes.
+- Incident commander assigned immediately.
+- Executive notification required.
+
+P2
+- Significant degradation, partial outage, or major operational issue.
+- Acknowledge within 15 minutes.
+
+P3
+- Limited impact or non-urgent production defect.
+- Handle during normal support workflow.
+
+P1 communication cadence:
+- initial internal update within 10 minutes,
+- customer-facing status update within 20 minutes when externally visible,
+- updates every 30 minutes until mitigation.
+
+Incident roles:
+- Incident Commander,
+- Operations Lead,
+- Communications Lead,
+- Subject Matter Experts.
+
+Postmortems:
+P1 incidents require a written postmortem within 5 business days.
+P2 incidents require a postmortem when the incident lasts more than 60 minutes, repeats a known failure mode,
+or exposes a meaningful process gap.
+
+Postmortems must focus on contributing conditions and systemic improvements rather than individual blame.
+
+Required postmortem sections:
+- summary,
+- customer impact,
+- timeline,
+- detection,
+- root cause,
+- contributing factors,
+- mitigation,
+- corrective actions,
+- lessons learned.
+
+Corrective actions should have owners and due dates.
+
+
+12. SECURITY AND DATA HANDLING
+
+Data classes:
+
+Public
+Information approved for unrestricted distribution.
+
+Internal
+Routine internal company information.
+
+Confidential
+Sensitive business or customer information requiring access controls.
+
+Restricted
+Highly sensitive information such as payment card data, security credentials, regulated personal data, and key
+material.
+
+Encryption:
+- Data in transit must use TLS 1.2 or higher.
+- New services should use TLS 1.3 where supported.
+- Confidential and Restricted data must be encrypted at rest.
+- Database encryption uses cloud-managed keys by default.
+- Restricted datasets may require customer-managed or dedicated keys.
+
+Secrets:
+Secrets must be stored in the approved secrets manager.
+Secrets must not appear in source code, build logs, chat messages, or issue trackers.
+
+Secret rotation:
+- standard application secrets: every 90 days,
+- legacy static integration credentials: every 30 days,
+- emergency rotation: immediately after suspected exposure.
+
+Production access:
+Standing write access to production databases is prohibited for ordinary engineers.
+Emergency elevated access is time-bound and audited.
+
+Data export:
+Exports containing Restricted data require explicit authorization and are automatically deleted after 7 days unless
+a longer retention period is approved.
+
+Security logs:
+Authentication, privilege changes, administrative actions, and key management events must be retained for 2 years.
+
+
+13. BACKUP, RESTORE, AND DISASTER RECOVERY
+
+Database backups:
+- full snapshot daily,
+- transaction log / point-in-time recovery enabled continuously,
+- backup retention: 35 days for standard production databases,
+- long-term monthly snapshots: 12 months for regulated systems.
+
+Payment database:
+- backup retention: 90 days,
+- monthly compliance snapshots: 7 years.
+
+Restore tests:
+Tier-0 databases must be restored in a test environment at least quarterly.
+Tier-1 databases must be restore-tested twice per year.
+
+Recovery objectives:
+
+Payment Orchestrator:
+- RPO: 0 minutes for committed payment records under normal multi-AZ failure.
+- Regional disaster RPO target: 5 minutes.
+- RTO target: 30 minutes.
+
+Customer Profile:
+- RPO target: 5 minutes.
+- RTO target: 60 minutes.
+
+Notification Service:
+- RPO target: 15 minutes for non-critical delivery history.
+- RTO target: 2 hours.
+
+Disaster recovery design:
+Production data is replicated within a region and selected critical datasets are replicated cross-region.
+Cross-region replicas may be asynchronous.
+
+A regional failover is not automatic for all services. Automatic failover is enabled for Identity edge validation
+and selected read services. Payment writes require controlled failover to reduce split-brain risk.
+
+Quarterly Tier-0 failover tests must include:
+- DNS or traffic shift,
+- dependency validation,
+- data consistency checks,
+- rollback validation.
+
+
+14. COST MANAGEMENT
+
+Every production service must carry cost allocation tags:
+- team,
+- service,
+- environment,
+- cost_center.
+
+Large cost changes are reviewed weekly.
+
+Common cost controls:
+- autoscaling,
+- storage lifecycle policies,
+- reserved capacity for stable workloads,
+- spot capacity for interruptible batch workloads,
+- log sampling,
+- trace sampling,
+- compression,
+- archive tiers.
+
+Object storage lifecycle:
+- standard tier: first 30 days,
+- infrequent access: day 31 to day 90,
+- archive tier: after day 90 when permitted.
+
+Logs:
+Teams should not use DEBUG logging permanently in production.
+Repeated high-cardinality labels in metrics should be avoided.
+
+Kafka:
+Over-partitioning can increase broker cost and operational complexity. New topics require a partition-count estimate
+based on throughput and ordering needs.
+
+Cost anomaly threshold:
+A daily service cost increase of more than 25 percent compared with the trailing 14-day baseline creates a review
+ticket. It does not automatically page the on-call engineer unless the increase is extreme or associated with an
+incident.
+
+
+15. PLATFORM RUNBOOKS
+
+15.1 DATABASE CONNECTION SATURATION
+
+Symptoms:
+- increased request latency,
+- connection pool exhaustion,
+- database "too many connections" warnings,
+- thread pools waiting on database clients.
+
+Immediate actions:
+1. Confirm database health and active connection count.
+2. Check for a recent deployment.
+3. Identify top services by open connections.
+4. Reduce runaway concurrency if safe.
+5. Roll back a suspected bad deployment.
+6. Consider temporarily increasing pool capacity only if database headroom exists.
+
+Do not simply increase connection limits without checking database CPU, memory, and query load.
+
+15.2 KAFKA CONSUMER LAG
+
+Symptoms:
+- increasing lag,
+- delayed notifications,
+- delayed analytics updates,
+- stale downstream projections.
+
+Checks:
+- consumer error rate,
+- partition imbalance,
+- poison messages,
+- slow external dependencies,
+- recent scaling events.
+
+Mitigation:
+- scale consumers if partitions allow parallelism,
+- isolate poison messages,
+- pause non-critical consumers,
+- verify downstream dependencies.
+
+Remember: adding consumers beyond the partition count does not increase parallelism within one consumer group.
+
+15.3 REDIS OUTAGE
+
+Expected behavior:
+- most services should fall back to their source database,
+- latency may increase,
+- request volume to databases may spike.
+
+Mitigation:
+- verify Redis cluster health,
+- enable cache-miss protection,
+- temporarily reduce optional traffic,
+- monitor source database saturation.
+
+The rate-limiter system may fail open for standard customer requests for up to 60 seconds. High-risk security
+endpoints do not use this fail-open behavior.
+
+15.4 EXTERNAL PAYMENT PROCESSOR TIMEOUT
+
+Do not assume the payment failed.
+The result may be ambiguous.
+
+Procedure:
+1. Record the attempt as PROCESSING or UNKNOWN.
+2. Do not create a second external charge using a new idempotency key.
+3. Query the processor if supported.
+4. Allow reconciliation to verify status.
+5. Use the same processor idempotency key for safe retries when applicable.
+
+15.5 ELEVATED LOGIN FAILURES
+
+Check:
+- Identity Service health,
+- token signing key distribution,
+- clock skew,
+- customer identity provider health,
+- recent authorization changes.
+
+If a signing key rotation is suspected, verify that the previous key is still available during the 24-hour overlap.
+
+
+16. ARCHITECTURE DECISION RECORDS
+
+ADR-021: Adopt Kafka as Default Event Backbone
+Status: Accepted
+Date: 2025-06-18
+
+Decision:
+Kafka will be the standard event platform for new asynchronous service workflows.
+
+Reasons:
+- stronger support for replay,
+- high throughput,
+- durable event logs,
+- partition-based ordering,
+- better fit for event-driven data pipelines.
+
+Consequences:
+Teams must design idempotent consumers. Ordering is available only within a partition. Operational expertise in
+Kafka becomes mandatory for platform teams.
+
+ADR-024: PostgreSQL for Payment Ledger State
+Status: Accepted
+Date: 2025-08-02
+
+Decision:
+Payment ledger and payment state remain in PostgreSQL rather than moving to a key-value store.
+
+Reasons:
+- transactional consistency,
+- relational constraints,
+- mature operational tooling,
+- need for controlled concurrent updates.
+
+ADR-031: Cache Is Not a Source of Truth
+Status: Accepted
+Date: 2025-11-11
+
+Decision:
+Redis and other caches must not contain the only durable copy of business-critical state.
+
+ADR-038: Payment Failover Must Be Controlled
+Status: Accepted
+Date: 2026-02-20
+
+Decision:
+Payment write traffic will not use unrestricted automatic multi-region active-active writes.
+
+Reason:
+The risk of split-brain or duplicate financial state is more serious than a short period of unavailability.
+
+ADR-041: Standardize Idempotency Keys
+Status: Accepted
+Date: 2026-04-09
+
+Decision:
+Public APIs that perform retryable write operations must accept idempotency keys.
+
+Default retention:
+24 hours unless service-specific rules require longer.
+
+Payment exception:
+7 days.
+
+Notification exception:
+48 hours.
+
+
+17. HISTORICAL ARCHITECTURE NOTES
+
+These notes are retained for historical context and may describe systems that are no longer current.
+
+2019-2022
+Most asynchronous workloads used RabbitMQ. Several services retried messages three times before dead-lettering.
+
+2023
+The platform adopted Redis broadly for API response caching. Some teams initially stored lightweight workflow state
+only in Redis. This practice was later prohibited after data loss during a cluster replacement.
+
+2024
+The Notification Service used a fixed three-attempt delivery retry policy. This is no longer current. Modern
+notification delivery uses channel-specific policies.
+
+2025
+Kafka migration began. By December 2025, most major workflows had moved from RabbitMQ to Kafka.
+
+Early 2025 payment behavior:
+The payment integration retried external processor calls up to three times on timeout. This was changed because a
+timeout can occur after the processor has already accepted the charge.
+
+Current payment behavior:
+Ambiguous external payment responses are recorded and reconciled. Scheduled retries use the same idempotency
+identity where the processor supports it.
+
+Historical warning:
+A search system may retrieve the old "three retries" payment note because the wording is similar to current retry
+documentation. Current policy is in Sections 6, 8, and 15.
+
+
+18. INCIDENT POSTMORTEMS
+
+INCIDENT PM-2025-017
+Title: Duplicate Payment Attempts During Processor Latency
+Severity: P1
+Date: 2025-03-14
+Duration: 47 minutes
+
+Summary:
+A payment processor experienced elevated latency. The Payment Orchestrator treated timeouts as failed attempts and
+issued fresh retry requests with new request identifiers.
+
+Impact:
+312 customers saw duplicate authorization holds. No permanent duplicate captures occurred, but support volume
+increased sharply.
+
+Root Cause:
+The retry logic assumed that an HTTP timeout meant the processor had not received the request.
+
+Corrective Actions:
+- Introduce processor-level idempotency keys.
+- Mark timeout outcomes as ambiguous.
+- Add reconciliation.
+- Stop blind immediate retries for ambiguous payment calls.
+
+This incident is the main reason the current Payment Orchestrator does not follow the generic HTTP retry policy for
+ambiguous processor requests.
+
+INCIDENT PM-2025-044
+Title: Redis Cluster Failure Caused Database Saturation
+Severity: P1
+Date: 2025-09-22
+Duration: 71 minutes
+
+Summary:
+A Redis cluster failed during maintenance. Services correctly fell back to databases, but simultaneous cache misses
+caused a large traffic spike.
+
+Impact:
+Customer Profile p95 latency increased from 180 ms to 2.8 seconds. Error rate peaked at 8 percent.
+
+Contributing Factors:
+- no request coalescing on hot customer-profile keys,
+- identical TTLs caused synchronized expiration,
+- source database pool was sized for normal cache-hit behavior.
+
+Corrective Actions:
+- add TTL jitter,
+- add request coalescing,
+- revise database headroom,
+- add cache-outage load tests.
+
+INCIDENT PM-2026-006
+Title: Notification Consumer Lag
+Severity: P2
+Date: 2026-01-19
+Duration: 96 minutes
+
+Summary:
+A malformed event repeatedly failed in a notification consumer.
+
+Impact:
+Email and push notifications were delayed by up to 54 minutes.
+
+Root Cause:
+The consumer retried the poison event in-process indefinitely instead of following the bounded retry-topic strategy.
+
+Corrective Actions:
+- enforce retry helper library,
+- add per-partition poison-message detection,
+- alert on sustained partition-specific lag.
+
+INCIDENT PM-2026-019
+Title: Signing Key Propagation Delay
+Severity: P1
+Date: 2026-05-08
+Duration: 26 minutes
+
+Summary:
+The Identity Service rotated a signing key. Several API Gateway nodes did not refresh the verification key set.
+
+Impact:
+Approximately 11 percent of authenticated requests failed in one region.
+
+Root Cause:
+A cache-refresh bug caused a stale key set to remain beyond the intended 10-minute cache period.
+
+Corrective Actions:
+- add key-set version monitoring,
+- push invalidation on key rotation,
+- preserve the 24-hour overlap window,
+- add synthetic authentication probes.
+
+INCIDENT PM-2026-027
+Title: Feature Flag Misconfiguration Enabled Incomplete Checkout Flow
+Severity: P2
+Date: 2026-07-03
+Duration: 38 minutes
+
+Summary:
+A feature flag intended for 5 percent of internal users was enabled for 50 percent of public traffic.
+
+Impact:
+Some customers saw a checkout option that could not complete successfully.
+
+Corrective Actions:
+- separate employee and customer targeting rules,
+- require peer review for high-risk production flag changes,
+- add automated guardrails for rollout percentages.
+
+
+19. FREQUENTLY ASKED QUESTIONS
+
+Q1. What messaging system should new services use?
+Kafka. RabbitMQ is retained only for specific legacy workloads and requires special approval for any new adoption.
+
+Q2. How many times are Kafka events retried?
+For the standard consumer pipeline, there are 2 immediate retries and 3 retry-topic attempts after the original
+attempt, for up to 6 total processing attempts. Payment settlement workflows have a separate policy.
+
+Q3. How many times are HTTP requests retried?
+The standard internal HTTP client can perform up to 2 retries for qualifying idempotent requests. Non-idempotent
+or ambiguous payment operations require special handling.
+
+Q4. What is the default idempotency-key retention?
+24 hours. Payment creation uses 7 days. Notification sending uses 48 hours.
+
+Q5. Is Redis a durable database?
+No. Redis is used as a cache and must not hold the only copy of business-critical state.
+
+Q6. What happens if Redis is unavailable?
+Most services fall back to the source database. Performance may degrade. Standard rate limiting may fail open for
+up to 60 seconds, but high-risk security controls do not.
+
+Q7. How long are access tokens valid?
+User access tokens are valid for 15 minutes by default. Machine-to-machine service tokens default to 60 minutes.
+
+Q8. How long are refresh tokens valid?
+30 days by default.
+
+Q9. What is the default gateway request timeout?
+30 seconds, with endpoint-specific exceptions.
+
+Q10. How large can ordinary API request bodies be?
+5 MB by default.
+
+Q11. What is the Payment Orchestrator RTO?
+30 minutes.
+
+Q12. What is the regional disaster RPO target for Payment Orchestrator?
+5 minutes.
+
+Q13. Are payment writes active-active across regions?
+No. Payment write failover is controlled to reduce the risk of inconsistent financial state.
+
+Q14. How long are ordinary distributed traces retained?
+14 days by default.
+
+Q15. How often are Tier-0 failover tests required?
+Quarterly.
+
+Q16. What is the default customer-profile cache TTL?
+15 minutes, but profile edits also publish invalidation events.
+
+Q17. What is the default product cache TTL?
+5 minutes.
+
+Q18. Which system still uses RabbitMQ?
+The Invoice Exporter and Legacy Email Bridge.
+
+Q19. What is the standard production deployment sequence?
+Staging, then 5 percent, 25 percent, 50 percent, and 100 percent, with observation periods between stages.
+
+Q20. What happens when payment processor status is ambiguous?
+The attempt remains processing or unknown, duplicate charging is avoided, and reconciliation verifies the final state.
+
+
+20. APPENDIX: REFERENCE TABLES AND GLOSSARY
+
+REFERENCE TABLE A: SELECTED TTLs
+
+Item | TTL / Retention
+User access token | 15 minutes
+Service token | 60 minutes
+JWT verification-key cache | 10 minutes
+Customer profile cache | 15 minutes
+Product details cache | 5 minutes
+Permission evaluation cache | 30 seconds
+Feature flag snapshot | 60 seconds
+Idempotency key default | 24 hours
+Payment idempotency key | 7 days
+Notification idempotency key | 48 hours
+Distributed trace retention | 14 days
+Hot application logs | 30 days
+Archived application logs | 365 days
+
+REFERENCE TABLE B: SERVICE OBJECTIVES
+
+Service | Tier | Availability Target | RTO
+Identity Service | Tier-0 | 99.99% | 30 minutes
+Payment Orchestrator | Tier-0 | 99.99% | 30 minutes
+Customer Profile | Tier-1 | 99.95% | 60 minutes
+Order Service | Tier-1 | 99.95% | 60 minutes
+Notification Service | Tier-2 | 99.9% | 2 hours
+
+REFERENCE TABLE C: RETRY SUMMARY
+
+Operation | Retry Policy
+Internal idempotent HTTP call | up to 2 retries after initial attempt
+Standard Kafka processing | 2 immediate + 3 retry-topic attempts
+Ambiguous payment processor call | no blind immediate retry; controlled reconciliation
+Payment settlement event | up to 5 scheduled retries over 30 minutes
+Legacy 2024 notification rule | historical 3-attempt policy, not current
+
+GLOSSARY
+
+Ack:
+An acknowledgment that a request or event has been received or processed.
+
+Availability Zone:
+An isolated infrastructure zone within a cloud region.
+
+Circuit Breaker:
+A resilience mechanism that temporarily blocks calls to a failing dependency.
+
+CDC:
+Change Data Capture. A technique that streams database changes to downstream systems.
+
+Dead-Letter Topic:
+A Kafka topic used to store events that could not be successfully processed after bounded retries.
+
+Idempotency:
+The property that repeating an operation does not create additional unintended effects.
+
+Outbox Pattern:
+A reliability pattern where business state and an event record are committed in one local database transaction.
+
+RPO:
+Recovery Point Objective. The maximum acceptable amount of data loss measured in time.
+
+RTO:
+Recovery Time Objective. The target time to restore a service after disruption.
+
+SLO:
+Service Level Objective.
+
+TTL:
+Time To Live.
+
+FINAL TEST NOTES
+
+This document deliberately contains:
+- current and historical retry policies,
+- multiple TTL values,
+- similar operational rules with exceptions,
+- service-specific overrides,
+- duplicated terminology across architecture and incident sections,
+- cross-references between policy and postmortems.
+
+Suggested RAG evaluation questions:
+
+1. What messaging platform should a new asynchronous service use?
+2. Which systems are still allowed to use RabbitMQ?
+3. How many total attempts can the standard Kafka pipeline make?
+4. Why should the payment retry policy not be described as "three retries"?
+5. What is the default idempotency retention, and how does Payment differ?
+6. What is the Customer Profile cache TTL?
+7. Why did the platform add TTL jitter?
+8. What happens during a Redis outage?
+9. What was the root cause of PM-2025-017?
+10. How long are user access tokens valid?
+11. What is the Payment Orchestrator RTO and regional disaster RPO?
+12. Are payment writes active-active across regions?
+13. What are the steps of the default progressive rollout?
+14. What are the P1 communication deadlines?
+15. How long are traces retained?
+16. What service tiers require quarterly failover testing?
+17. What is the maximum ordinary API request body size?
+18. Why is payment processor timeout treated as ambiguous?
+19. What architecture rule was created after Redis-related data loss?
+20. Compare standard HTTP retries, standard Kafka retries, and payment retries.
+
+
+APPENDIX RUNBOOK EXAMPLE 01
+
+Scenario:
+A synthetic service named ExampleService-01 experiences elevated latency during a routine traffic increase.
+
+Investigation checklist:
+- Verify whether the issue is isolated to one region or all regions.
+- Compare request rate, error rate, p95 latency, and p99 latency against the previous seven-day baseline.
+- Check whether a deployment occurred in the last 60 minutes.
+- Check Redis hit rate and database connection-pool saturation.
+- Check Kafka consumer lag for asynchronous downstream work.
+- Review external dependency latency.
+- Confirm that retries are not amplifying traffic.
+- Confirm that circuit breakers are functioning as expected.
+- Inspect a sample of distributed traces.
+- Review whether one tenant is disproportionately contributing load.
+
+Synthetic findings:
+In this example, Redis hit rate falls from 92 percent to 61 percent after a cache-node restart. Database query
+volume rises by 2.4x. The application remains correct because Redis is not the source of truth, but p95 latency
+increases from 210 ms to 740 ms. Request coalescing reduces repeated database reads for hot keys.
+
+Resolution:
+The cache cluster stabilizes, hit rate returns above 90 percent, and latency returns to normal. No customer data
+is lost. The team creates a follow-up action to load-test the service with a complete cache outage.
+
+Retrieval note:
+This example reinforces the general cache-outage policy but does not override any TTL, retry, retention, RPO,
+RTO, or security values documented elsewhere.
+
+
+APPENDIX RUNBOOK EXAMPLE 02
+
+Scenario:
+A synthetic service named ExampleService-02 experiences elevated latency during a routine traffic increase.
+
+Investigation checklist:
+- Verify whether the issue is isolated to one region or all regions.
+- Compare request rate, error rate, p95 latency, and p99 latency against the previous seven-day baseline.
+- Check whether a deployment occurred in the last 60 minutes.
+- Check Redis hit rate and database connection-pool saturation.
+- Check Kafka consumer lag for asynchronous downstream work.
+- Review external dependency latency.
+- Confirm that retries are not amplifying traffic.
+- Confirm that circuit breakers are functioning as expected.
+- Inspect a sample of distributed traces.
+- Review whether one tenant is disproportionately contributing load.
+
+Synthetic findings:
+In this example, Redis hit rate falls from 92 percent to 61 percent after a cache-node restart. Database query
+volume rises by 2.4x. The application remains correct because Redis is not the source of truth, but p95 latency
+increases from 210 ms to 740 ms. Request coalescing reduces repeated database reads for hot keys.
+
+Resolution:
+The cache cluster stabilizes, hit rate returns above 90 percent, and latency returns to normal. No customer data
+is lost. The team creates a follow-up action to load-test the service with a complete cache outage.
+
+Retrieval note:
+This example reinforces the general cache-outage policy but does not override any TTL, retry, retention, RPO,
+RTO, or security values documented elsewhere.
+
+
+APPENDIX RUNBOOK EXAMPLE 03
+
+Scenario:
+A synthetic service named ExampleService-03 experiences elevated latency during a routine traffic increase.
+
+Investigation checklist:
+- Verify whether the issue is isolated to one region or all regions.
+- Compare request rate, error rate, p95 latency, and p99 latency against the previous seven-day baseline.
+- Check whether a deployment occurred in the last 60 minutes.
+- Check Redis hit rate and database connection-pool saturation.
+- Check Kafka consumer lag for asynchronous downstream work.
+- Review external dependency latency.
+- Confirm that retries are not amplifying traffic.
+- Confirm that circuit breakers are functioning as expected.
+- Inspect a sample of distributed traces.
+- Review whether one tenant is disproportionately contributing load.
+
+Synthetic findings:
+In this example, Redis hit rate falls from 92 percent to 61 percent after a cache-node restart. Database query
+volume rises by 2.4x. The application remains correct because Redis is not the source of truth, but p95 latency
+increases from 210 ms to 740 ms. Request coalescing reduces repeated database reads for hot keys.
+
+Resolution:
+The cache cluster stabilizes, hit rate returns above 90 percent, and latency returns to normal. No customer data
+is lost. The team creates a follow-up action to load-test the service with a complete cache outage.
+
+Retrieval note:
+This example reinforces the general cache-outage policy but does not override any TTL, retry, retention, RPO,
+RTO, or security values documented elsewhere.
+
+
+APPENDIX RUNBOOK EXAMPLE 04
+
+Scenario:
+A synthetic service named ExampleService-04 experiences elevated latency during a routine traffic increase.
+
+Investigation checklist:
+- Verify whether the issue is isolated to one region or all regions.
+- Compare request rate, error rate, p95 latency, and p99 latency against the previous seven-day baseline.
+- Check whether a deployment occurred in the last 60 minutes.
+- Check Redis hit rate and database connection-pool saturation.
+- Check Kafka consumer lag for asynchronous downstream work.
+- Review external dependency latency.
+- Confirm that retries are not amplifying traffic.
+- Confirm that circuit breakers are functioning as expected.
+- Inspect a sample of distributed traces.
+- Review whether one tenant is disproportionately contributing load.
+
+Synthetic findings:
+In this example, Redis hit rate falls from 92 percent to 61 percent after a cache-node restart. Database query
+volume rises by 2.4x. The application remains correct because Redis is not the source of truth, but p95 latency
+increases from 210 ms to 740 ms. Request coalescing reduces repeated database reads for hot keys.
+
+Resolution:
+The cache cluster stabilizes, hit rate returns above 90 percent, and latency returns to normal. No customer data
+is lost. The team creates a follow-up action to load-test the service with a complete cache outage.
+
+Retrieval note:
+This example reinforces the general cache-outage policy but does not override any TTL, retry, retention, RPO,
+RTO, or security values documented elsewhere.
+
+
+APPENDIX RUNBOOK EXAMPLE 05
+
+Scenario:
+A synthetic service named ExampleService-05 experiences elevated latency during a routine traffic increase.
+
+Investigation checklist:
+- Verify whether the issue is isolated to one region or all regions.
+- Compare request rate, error rate, p95 latency, and p99 latency against the previous seven-day baseline.
+- Check whether a deployment occurred in the last 60 minutes.
+- Check Redis hit rate and database connection-pool saturation.
+- Check Kafka consumer lag for asynchronous downstream work.
+- Review external dependency latency.
+- Confirm that retries are not amplifying traffic.
+- Confirm that circuit breakers are functioning as expected.
+- Inspect a sample of distributed traces.
+- Review whether one tenant is disproportionately contributing load.
+
+Synthetic findings:
+In this example, Redis hit rate falls from 92 percent to 61 percent after a cache-node restart. Database query
+volume rises by 2.4x. The application remains correct because Redis is not the source of truth, but p95 latency
+increases from 210 ms to 740 ms. Request coalescing reduces repeated database reads for hot keys.
+
+Resolution:
+The cache cluster stabilizes, hit rate returns above 90 percent, and latency returns to normal. No customer data
+is lost. The team creates a follow-up action to load-test the service with a complete cache outage.
+
+Retrieval note:
+This example reinforces the general cache-outage policy but does not override any TTL, retry, retention, RPO,
+RTO, or security values documented elsewhere.
+
+
+APPENDIX RUNBOOK EXAMPLE 06
+
+Scenario:
+A synthetic service named ExampleService-06 experiences elevated latency during a routine traffic increase.
+
+Investigation checklist:
+- Verify whether the issue is isolated to one region or all regions.
+- Compare request rate, error rate, p95 latency, and p99 latency against the previous seven-day baseline.
+- Check whether a deployment occurred in the last 60 minutes.
+- Check Redis hit rate and database connection-pool saturation.
+- Check Kafka consumer lag for asynchronous downstream work.
+- Review external dependency latency.
+- Confirm that retries are not amplifying traffic.
+- Confirm that circuit breakers are functioning as expected.
+- Inspect a sample of distributed traces.
+- Review whether one tenant is disproportionately contributing load.
+
+Synthetic findings:
+In this example, Redis hit rate falls from 92 percent to 61 percent after a cache-node restart. Database query
+volume rises by 2.4x. The application remains correct because Redis is not the source of truth, but p95 latency
+increases from 210 ms to 740 ms. Request coalescing reduces repeated database reads for hot keys.
+
+Resolution:
+The cache cluster stabilizes, hit rate returns above 90 percent, and latency returns to normal. No customer data
+is lost. The team creates a follow-up action to load-test the service with a complete cache outage.
+
+Retrieval note:
+This example reinforces the general cache-outage policy but does not override any TTL, retry, retention, RPO,
+RTO, or security values documented elsewhere.
+
+
+APPENDIX RUNBOOK EXAMPLE 07
+
+Scenario:
+A synthetic service named ExampleService-07 experiences elevated latency during a routine traffic increase.
+
+Investigation checklist:
+- Verify whether the issue is isolated to one region or all regions.
+- Compare request rate, error rate, p95 latency, and p99 latency against the previous seven-day baseline.
+- Check whether a deployment occurred in the last 60 minutes.
+- Check Redis hit rate and database connection-pool saturation.
+- Check Kafka consumer lag for asynchronous downstream work.
+- Review external dependency latency.
+- Confirm that retries are not amplifying traffic.
+- Confirm that circuit breakers are functioning as expected.
+- Inspect a sample of distributed traces.
+- Review whether one tenant is disproportionately contributing load.
+
+Synthetic findings:
+In this example, Redis hit rate falls from 92 percent to 61 percent after a cache-node restart. Database query
+volume rises by 2.4x. The application remains correct because Redis is not the source of truth, but p95 latency
+increases from 210 ms to 740 ms. Request coalescing reduces repeated database reads for hot keys.
+
+Resolution:
+The cache cluster stabilizes, hit rate returns above 90 percent, and latency returns to normal. No customer data
+is lost. The team creates a follow-up action to load-test the service with a complete cache outage.
+
+Retrieval note:
+This example reinforces the general cache-outage policy but does not override any TTL, retry, retention, RPO,
+RTO, or security values documented elsewhere.
+
+
+APPENDIX RUNBOOK EXAMPLE 08
+
+Scenario:
+A synthetic service named ExampleService-08 experiences elevated latency during a routine traffic increase.
+
+Investigation checklist:
+- Verify whether the issue is isolated to one region or all regions.
+- Compare request rate, error rate, p95 latency, and p99 latency against the previous seven-day baseline.
+- Check whether a deployment occurred in the last 60 minutes.
+- Check Redis hit rate and database connection-pool saturation.
+- Check Kafka consumer lag for asynchronous downstream work.
+- Review external dependency latency.
+- Confirm that retries are not amplifying traffic.
+- Confirm that circuit breakers are functioning as expected.
+- Inspect a sample of distributed traces.
+- Review whether one tenant is disproportionately contributing load.
+
+Synthetic findings:
+In this example, Redis hit rate falls from 92 percent to 61 percent after a cache-node restart. Database query
+volume rises by 2.4x. The application remains correct because Redis is not the source of truth, but p95 latency
+increases from 210 ms to 740 ms. Request coalescing reduces repeated database reads for hot keys.
+
+Resolution:
+The cache cluster stabilizes, hit rate returns above 90 percent, and latency returns to normal. No customer data
+is lost. The team creates a follow-up action to load-test the service with a complete cache outage.
+
+Retrieval note:
+This example reinforces the general cache-outage policy but does not override any TTL, retry, retention, RPO,
+RTO, or security values documented elsewhere.
+
+
+APPENDIX RUNBOOK EXAMPLE 09
+
+Scenario:
+A synthetic service named ExampleService-09 experiences elevated latency during a routine traffic increase.
+
+Investigation checklist:
+- Verify whether the issue is isolated to one region or all regions.
+- Compare request rate, error rate, p95 latency, and p99 latency against the previous seven-day baseline.
+- Check whether a deployment occurred in the last 60 minutes.
+- Check Redis hit rate and database connection-pool saturation.
+- Check Kafka consumer lag for asynchronous downstream work.
+- Review external dependency latency.
+- Confirm that retries are not amplifying traffic.
+- Confirm that circuit breakers are functioning as expected.
+- Inspect a sample of distributed traces.
+- Review whether one tenant is disproportionately contributing load.
+
+Synthetic findings:
+In this example, Redis hit rate falls from 92 percent to 61 percent after a cache-node restart. Database query
+volume rises by 2.4x. The application remains correct because Redis is not the source of truth, but p95 latency
+increases from 210 ms to 740 ms. Request coalescing reduces repeated database reads for hot keys.
+
+Resolution:
+The cache cluster stabilizes, hit rate returns above 90 percent, and latency returns to normal. No customer data
+is lost. The team creates a follow-up action to load-test the service with a complete cache outage.
+
+Retrieval note:
+This example reinforces the general cache-outage policy but does not override any TTL, retry, retention, RPO,
+RTO, or security values documented elsewhere.
+
+
+APPENDIX RUNBOOK EXAMPLE 10
+
+Scenario:
+A synthetic service named ExampleService-10 experiences elevated latency during a routine traffic increase.
+
+Investigation checklist:
+- Verify whether the issue is isolated to one region or all regions.
+- Compare request rate, error rate, p95 latency, and p99 latency against the previous seven-day baseline.
+- Check whether a deployment occurred in the last 60 minutes.
+- Check Redis hit rate and database connection-pool saturation.
+- Check Kafka consumer lag for asynchronous downstream work.
+- Review external dependency latency.
+- Confirm that retries are not amplifying traffic.
+- Confirm that circuit breakers are functioning as expected.
+- Inspect a sample of distributed traces.
+- Review whether one tenant is disproportionately contributing load.
+
+Synthetic findings:
+In this example, Redis hit rate falls from 92 percent to 61 percent after a cache-node restart. Database query
+volume rises by 2.4x. The application remains correct because Redis is not the source of truth, but p95 latency
+increases from 210 ms to 740 ms. Request coalescing reduces repeated database reads for hot keys.
+
+Resolution:
+The cache cluster stabilizes, hit rate returns above 90 percent, and latency returns to normal. No customer data
+is lost. The team creates a follow-up action to load-test the service with a complete cache outage.
+
+Retrieval note:
+This example reinforces the general cache-outage policy but does not override any TTL, retry, retention, RPO,
+RTO, or security values documented elsewhere.
+
+
+APPENDIX RUNBOOK EXAMPLE 11
+
+Scenario:
+A synthetic service named ExampleService-11 experiences elevated latency during a routine traffic increase.
+
+Investigation checklist:
+- Verify whether the issue is isolated to one region or all regions.
+- Compare request rate, error rate, p95 latency, and p99 latency against the previous seven-day baseline.
+- Check whether a deployment occurred in the last 60 minutes.
+- Check Redis hit rate and database connection-pool saturation.
+- Check Kafka consumer lag for asynchronous downstream work.
+- Review external dependency latency.
+- Confirm that retries are not amplifying traffic.
+- Confirm that circuit breakers are functioning as expected.
+- Inspect a sample of distributed traces.
+- Review whether one tenant is disproportionately contributing load.
+
+Synthetic findings:
+In this example, Redis hit rate falls from 92 percent to 61 percent after a cache-node restart. Database query
+volume rises by 2.4x. The application remains correct because Redis is not the source of truth, but p95 latency
+increases from 210 ms to 740 ms. Request coalescing reduces repeated database reads for hot keys.
+
+Resolution:
+The cache cluster stabilizes, hit rate returns above 90 percent, and latency returns to normal. No customer data
+is lost. The team creates a follow-up action to load-test the service with a complete cache outage.
+
+Retrieval note:
+This example reinforces the general cache-outage policy but does not override any TTL, retry, retention, RPO,
+RTO, or security values documented elsewhere.
+
+
+APPENDIX RUNBOOK EXAMPLE 12
+
+Scenario:
+A synthetic service named ExampleService-12 experiences elevated latency during a routine traffic increase.
+
+Investigation checklist:
+- Verify whether the issue is isolated to one region or all regions.
+- Compare request rate, error rate, p95 latency, and p99 latency against the previous seven-day baseline.
+- Check whether a deployment occurred in the last 60 minutes.
+- Check Redis hit rate and database connection-pool saturation.
+- Check Kafka consumer lag for asynchronous downstream work.
+- Review external dependency latency.
+- Confirm that retries are not amplifying traffic.
+- Confirm that circuit breakers are functioning as expected.
+- Inspect a sample of distributed traces.
+- Review whether one tenant is disproportionately contributing load.
+
+Synthetic findings:
+In this example, Redis hit rate falls from 92 percent to 61 percent after a cache-node restart. Database query
+volume rises by 2.4x. The application remains correct because Redis is not the source of truth, but p95 latency
+increases from 210 ms to 740 ms. Request coalescing reduces repeated database reads for hot keys.
+
+Resolution:
+The cache cluster stabilizes, hit rate returns above 90 percent, and latency returns to normal. No customer data
+is lost. The team creates a follow-up action to load-test the service with a complete cache outage.
+
+Retrieval note:
+This example reinforces the general cache-outage policy but does not override any TTL, retry, retention, RPO,
+RTO, or security values documented elsewhere.

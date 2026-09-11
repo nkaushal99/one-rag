@@ -1,7 +1,7 @@
 import re
 
 
-SUPPORTED_STRATEGIES = {"fixed", "fixed_overlap", "sentence", "sentence_window", "paragraph", "section"}
+SUPPORTED_STRATEGIES = {"fixed", "fixed_overlap", "sentence", "sentence_window", "paragraph", "section", "parent_child"}
 
 
 def token_count(text: str) -> int:
@@ -29,7 +29,7 @@ def section_chunks(text: str) -> list[str]:
     heading = ""
     body: list[str] = []
     for line in text.strip().splitlines():
-        if re.match(r"^#{1,6}\s+", line):
+        if re.match(r"^(#{1,6}\s+|\d{1,2}\.\s+[A-Z][A-Z ]+$)", line):
             if heading or body:
                 sections.append("\n".join([heading, *body]).strip())
             heading, body = line.strip(), []
@@ -62,4 +62,6 @@ def chunk_text(text: str, strategy: str = "sentence", chunk_size: int = 500, chu
         return sentence_window_chunks(text, sentence_window_size, sentence_window_overlap)
     if strategy == "paragraph":
         return paragraph_chunks(text)
-    return section_chunks(text)
+    if strategy == "section":
+        return section_chunks(text)
+    raise ValueError("Parent-child chunking is handled by the retrieval service.")
