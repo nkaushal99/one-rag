@@ -1,13 +1,37 @@
-# One RAG — Step 1
+# One RAG — MVP
 
-This is the first learning milestone: plain-text documents are chunked, embedded,
-stored in Qdrant, and retrieved by semantic similarity. It intentionally has no
-framework, API, UI, hybrid search, reranker, or LLM yet.
+The project begins with a deliberately small local infrastructure foundation and
+a transparent retrieval CLI. It does not use LangChain or LangGraph.
+
+## Stage 0: local infrastructure
+
+`docker compose up --build` starts these local services:
+
+- FastAPI at `http://localhost:8000` (interactive docs: `/docs`)
+- PostgreSQL at `localhost:5432` for future document/job metadata
+- Qdrant at `localhost:6333` for vectors
+- Redis at `localhost:6379` for future cache/short-lived job state
+- Redpanda at `localhost:19092`, a Kafka-compatible broker for future ingestion jobs
+
+Verify the stack with `curl http://localhost:8000/health/ready`. It checks all
+four dependencies and returns HTTP 503 until they are reachable. Data volumes are
+named and persist across container restarts. `docker compose down` stops services;
+add `-v` only when you intentionally want to delete local data.
+
+The `.env.template` file uses host-facing addresses for local commands. Compose
+overrides those addresses inside the API container. The existing CLI reads the
+host-facing `QDRANT_URL` from `.env` (normally `http://localhost:6333`). LLM and reranker settings are
+declared but deliberately unset: provider integration belongs to a later stage.
+
+## Stage 1: transparent retrieval
+
+Plain-text documents are chunked, embedded, stored in Qdrant, and retrieved by
+semantic similarity. The CLI intentionally has no LLM yet.
 
 ## Run it
 
-1. Start Qdrant: `docker compose up -d`
-2. Install dependencies: `uv sync`
+1. Start the local stack: `docker compose up --build -d`
+2. Install CLI retrieval dependencies: `uv sync --extra retrieval`
 3. Copy `.env.template` to `.env` if it is not already present.
 4. Index the sample documents: `uv run rag.py index`
 5. Search: `uv run rag.py ask "How can I change my credentials?"`
