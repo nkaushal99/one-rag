@@ -37,9 +37,9 @@ scores, and a context string. Both are available in the running API's `/docs`.
 
 Example:
 
-```powershell
-curl.exe -X POST http://127.0.0.1:8000/v1/documents -H "Content-Type: application/json" -d '{"document_id":"account-guide","source":"account-guide.txt","text":"Credentials can be modified from Account Settings."}'
-curl.exe -X POST http://127.0.0.1:8000/v1/query -H "Content-Type: application/json" -d '{"question":"How can I reset my password?"}'
+```bash
+curl -X POST http://127.0.0.1:8000/v1/documents -H "Content-Type: application/json" -d '{"document_id":"account-guide","source":"account-guide.txt","text":"Credentials can be modified from Account Settings."}'
+curl -X POST http://127.0.0.1:8000/v1/query -H "Content-Type: application/json" -d '{"question":"How can I reset my password?"}'
 ```
 
 An import-ready Postman collection is available at
@@ -63,9 +63,27 @@ stored text, preserving the chunks while adding `document_id`, `source`, and
 
 Add your own UTF-8 `.txt` files under `documents/`, then run the index command again.
 
-Set `CHUNKING_STRATEGY` in `.env` to `sentence`, `sentence_window`, `section`,
-or `paragraph`, then index again before comparing search results. The default
+## Stage 2: chunking experiment
+
+Set `CHUNKING_STRATEGY` in `.env` to `fixed`, `fixed_overlap`, `sentence`,
+`sentence_window`, `paragraph`, or `section`, then index again before comparing
+search results. `fixed` uses `FIXED_CHUNK_SIZE=500` lexical tokens; `fixed_overlap`
+reuses `FIXED_CHUNK_OVERLAP=100` tokens from the preceding chunk. The default
 `sentence_window` uses two sentences with one overlapping sentence.
+
+Run the same corpus and three answer-completeness checks through every strategy:
+
+```bash
+uv run --extra retrieval scripts/evaluate_chunking.py
+```
+
+The generated `evals/chunking-results.json` records each strategy's chunk count,
+top similarity score, retrieved chunk indexes, and whether its top-three context
+contains every expected answer phrase. It uses top-1 by default so an answer
+that crosses a chunk boundary is visible. Read the evidence, not just the score:
+cosine similarity ranks relevance but is not an accuracy percentage. The
+evaluation collections (`chunking_eval_*`) are deliberately retained in Qdrant
+for inspection.
 
 ## What to inspect
 

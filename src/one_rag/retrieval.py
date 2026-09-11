@@ -25,7 +25,14 @@ class RetrievalService:
         return [list(vector) for vector in self.embedder.embed(texts)]
 
     def ingest(self, document_id: str, source: str, text: str) -> int:
-        chunks = chunk_text(text)
+        chunks = chunk_text(
+            text,
+            strategy=self.settings.chunking_strategy,
+            chunk_size=self.settings.fixed_chunk_size,
+            chunk_overlap=self.settings.fixed_chunk_overlap,
+            sentence_window_size=self.settings.sentence_window_size,
+            sentence_window_overlap=self.settings.sentence_window_overlap,
+        )
         if not chunks:
             raise ValueError("Document text contains no indexable sentences.")
         vectors = self._vectors(chunks)
@@ -49,6 +56,7 @@ class RetrievalService:
                     "document_id": document_id,
                     "source": source,
                     "chunk_index": index,
+                    "chunking_strategy": self.settings.chunking_strategy,
                     "text": chunk,
                 },
             )

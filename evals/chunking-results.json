@@ -1,0 +1,137 @@
+{
+  "limit": 1,
+  "strategies": {
+    "fixed": {
+      "chunks_indexed": 1,
+      "complete_context_at_limit": "2/2",
+      "queries": [
+        {
+          "question": "How can I reset my password?",
+          "complete_answer_context": true,
+          "top_score": 0.7135,
+          "retrieved_chunk_indexes": [
+            0
+          ]
+        },
+        {
+          "question": "Why can a duplicate payment event be delivered?",
+          "complete_answer_context": true,
+          "top_score": 0.7029,
+          "retrieved_chunk_indexes": [
+            0
+          ]
+        }
+      ]
+    },
+    "fixed_overlap": {
+      "chunks_indexed": 1,
+      "complete_context_at_limit": "2/2",
+      "queries": [
+        {
+          "question": "How can I reset my password?",
+          "complete_answer_context": true,
+          "top_score": 0.7135,
+          "retrieved_chunk_indexes": [
+            0
+          ]
+        },
+        {
+          "question": "Why can a duplicate payment event be delivered?",
+          "complete_answer_context": true,
+          "top_score": 0.7029,
+          "retrieved_chunk_indexes": [
+            0
+          ]
+        }
+      ]
+    },
+    "paragraph": {
+      "chunks_indexed": 3,
+      "complete_context_at_limit": "2/2",
+      "queries": [
+        {
+          "question": "How can I reset my password?",
+          "complete_answer_context": true,
+          "top_score": 0.8177,
+          "retrieved_chunk_indexes": [
+            1
+          ]
+        },
+        {
+          "question": "Why can a duplicate payment event be delivered?",
+          "complete_answer_context": true,
+          "top_score": 0.8342,
+          "retrieved_chunk_indexes": [
+            2
+          ]
+        }
+      ]
+    },
+    "section": {
+      "chunks_indexed": 1,
+      "complete_context_at_limit": "2/2",
+      "queries": [
+        {
+          "question": "How can I reset my password?",
+          "complete_answer_context": true,
+          "top_score": 0.7135,
+          "retrieved_chunk_indexes": [
+            0
+          ]
+        },
+        {
+          "question": "Why can a duplicate payment event be delivered?",
+          "complete_answer_context": true,
+          "top_score": 0.7029,
+          "retrieved_chunk_indexes": [
+            0
+          ]
+        }
+      ]
+    },
+    "sentence": {
+      "chunks_indexed": 4,
+      "complete_context_at_limit": "0/2",
+      "queries": [
+        {
+          "question": "How can I reset my password?",
+          "complete_answer_context": false,
+          "top_score": 0.8328,
+          "retrieved_chunk_indexes": [
+            0
+          ]
+        },
+        {
+          "question": "Why can a duplicate payment event be delivered?",
+          "complete_answer_context": false,
+          "top_score": 0.8206,
+          "retrieved_chunk_indexes": [
+            2
+          ]
+        }
+      ]
+    },
+    "sentence_window": {
+      "chunks_indexed": 4,
+      "complete_context_at_limit": "2/2",
+      "queries": [
+        {
+          "question": "How can I reset my password?",
+          "complete_answer_context": true,
+          "top_score": 0.7871,
+          "retrieved_chunk_indexes": [
+            0
+          ]
+        },
+        {
+          "question": "Why can a duplicate payment event be delivered?",
+          "complete_answer_context": true,
+          "top_score": 0.8342,
+          "retrieved_chunk_indexes": [
+            2
+          ]
+        }
+      ]
+    }
+  }
+}

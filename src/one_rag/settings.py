@@ -15,6 +15,11 @@ class Settings(BaseSettings):
     llm_provider: str = ""
     llm_model: str = ""
     reranker_model: str = ""
+    chunking_strategy: str = "sentence_window"
+    fixed_chunk_size: int = 500
+    fixed_chunk_overlap: int = 100
+    sentence_window_size: int = 2
+    sentence_window_overlap: int = 1
 
 
 @lru_cache

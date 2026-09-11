@@ -1,0 +1,10 @@
+[
+  {
+    "question": "How can I reset my password?",
+    "required_phrases": ["Account Settings", "confirmation email"]
+  },
+  {
+    "question": "Why can a duplicate payment event be delivered?",
+    "required_phrases": ["consumer acknowledged", "retries can deliver the same event more than once"]
+  }
+]

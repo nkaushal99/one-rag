@@ -16,7 +16,7 @@ class DeterministicEmbedder:
 class RetrievalTests(TestCase):
     def test_ingest_and_query_returns_cosine_ranked_evidence(self) -> None:
         service = RetrievalService.__new__(RetrievalService)
-        service.settings = Settings(qdrant_url=":memory:", collection="test_documents")
+        service.settings = Settings(qdrant_url=":memory:", collection="test_documents", chunking_strategy="sentence")
         service.client = QdrantClient(":memory:")
         service.embedder = DeterministicEmbedder()
 
