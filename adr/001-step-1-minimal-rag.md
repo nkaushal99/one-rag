@@ -10,7 +10,9 @@ The first milestone is to learn the RAG pipeline rather than hide it behind a fr
 
 ## Decision
 
-Use a Python CLI, UTF-8 text files, fixed-size overlapping chunks, local
+Use a Python CLI, UTF-8 text files, and an explicit chunking strategy selected
+from the environment. Start with sentence chunks, then compare section chunks,
+paragraph chunks with headings, and sentence windows with overlap. Use local
 sentence-transformer embeddings, and a local Qdrant container. Print retrieved
 chunks with their source and score.
 

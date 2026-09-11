@@ -14,9 +14,13 @@ framework, API, UI, hybrid search, reranker, or LLM yet.
 
 Add your own UTF-8 `.txt` files under `documents/`, then run the index command again.
 
+Set `CHUNKING_STRATEGY` in `.env` to `sentence`, `sentence_window`, `section`,
+or `paragraph`, then index again before comparing search results. The default
+`sentence_window` uses two sentences with one overlapping sentence.
+
 ## What to inspect
 
-- `chunk_text` shows fixed-size chunking with overlap.
+- `chunk_text` selects one explicit chunking strategy from `.env`.
 - `SentenceTransformer` turns text into vectors.
 - Qdrant ranks the question vector against chunk vectors using cosine similarity.
 - The CLI prints retrieved chunks, source, chunk number, and similarity score.
