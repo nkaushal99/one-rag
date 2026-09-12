@@ -12,6 +12,20 @@ from one_rag.settings import get_settings
 app = FastAPI(title="One RAG", version="0.1.0")
 
 
+def build_context(evidence: list[Evidence]) -> str:
+    """Keep expanded parent context once, while evidence retains every child match."""
+    blocks = []
+    included = set()
+    for item in evidence:
+        key = (item.document_id, item.parent_chunk_index) if item.parent_text else (item.document_id, item.chunk_index)
+        if key in included:
+            continue
+        included.add(key)
+        label = f"parent {item.parent_chunk_index}" if item.parent_text else f"chunk {item.chunk_index}"
+        blocks.append(f"[{item.source} | {label}]\n{item.parent_text or item.text}")
+    return "\n\n".join(blocks)
+
+
 @app.get("/health/live", tags=["health"])
 def liveness() -> dict[str, str]:
     return {"status": "ok"}
@@ -64,5 +78,5 @@ def ingest_document(document: DocumentIn) -> IngestedDocument:
 @app.post("/v1/query", response_model=QueryResult, tags=["rag"])
 def query_documents(query: QueryIn) -> QueryResult:
     evidence = [Evidence(**item) for item in RetrievalService().search(query.question, query.limit, query.neighbor_count, query.include_parent_context)]
-    context = "\n\n".join(f"[{item.source} | chunk {item.chunk_index}]\n{item.parent_text or item.text}" for item in evidence)
+    context = build_context(evidence)
     return QueryResult(question=query.question, context=context, evidence=evidence)

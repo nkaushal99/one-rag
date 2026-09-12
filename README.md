@@ -104,7 +104,9 @@ uv run --extra retrieval rag.py ask "What is the retry policy for a P1 incident?
 
 The HTTP query endpoint accepts `neighbor_count` (0–3). Its
 `include_parent_context` field defaults to `true` and can be set to `false` for
-child-only evidence.
+child-only evidence. When multiple returned children share a parent, the
+constructed context includes that parent only once; the evidence list still
+shows each match and neighbor.
 
 ## What to inspect
 

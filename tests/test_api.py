@@ -3,7 +3,8 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from one_rag.api import app
+from one_rag.api import app, build_context
+from one_rag.schemas import Evidence
 
 
 class FakeRetrievalService:
@@ -41,3 +42,12 @@ class ApiTests(TestCase):
         response = self.client.post("/v1/query", json={"question": "How do I recover?"})
         self.assertEqual(response.status_code, 200)
         self.assertTrue(service.include_parent_context)
+
+    def test_context_includes_an_expanded_parent_only_once(self) -> None:
+        evidence = [
+            Evidence(document_id="handbook", source="handbook.txt", chunk_index=10, text="First child.", score=0.9, parent_chunk_index=2, parent_text="Full parent."),
+            Evidence(document_id="handbook", source="handbook.txt", chunk_index=11, text="Neighbor child.", score=0.8, parent_chunk_index=2, parent_text="Full parent.", retrieval_reason="neighbor"),
+        ]
+        context = build_context(evidence)
+        self.assertEqual(context.count("Full parent."), 1)
+        self.assertIn("parent 2", context)
