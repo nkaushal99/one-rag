@@ -10,8 +10,8 @@ from one_rag.schemas import Evidence
 class FakeRetrievalService:
     include_parent_context: bool | None = None
 
-    def ingest(self, document_id: str, source: str, text: str) -> int:
-        return 2
+    def create_document(self, source: str, text: str, tenant_id: str) -> dict[str, object]:
+        return {"document_id": "doc_generated", "source": source, "chunks_indexed": 2, "version": 1, "content_hash": "hash", "embedding_reused": False, "unchanged": False}
 
     def search(self, question: str, limit: int, neighbor_count: int = 0, include_parent_context: bool = False) -> list[dict[str, object]]:
         self.include_parent_context = include_parent_context
@@ -24,9 +24,10 @@ class ApiTests(TestCase):
 
     @patch("one_rag.api.RetrievalService", FakeRetrievalService)
     def test_ingest_document_returns_chunk_count(self) -> None:
-        response = self.client.post("/v1/documents", json={"document_id": "handbook", "source": "handbook.txt", "text": "First. Second."})
+        response = self.client.post("/v1/documents", json={"source": "handbook.txt", "text": "First. Second."})
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.json()["chunks_indexed"], 2)
+        self.assertEqual(response.json()["document_id"], "doc_generated")
 
     @patch("one_rag.api.RetrievalService", FakeRetrievalService)
     def test_query_returns_context_and_scored_evidence(self) -> None:

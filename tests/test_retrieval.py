@@ -42,3 +42,23 @@ class RetrievalTests(TestCase):
         self.assertEqual({result["parent_chunk_index"] for result in results}, {0})
         self.assertEqual({result["child_chunk_index"] for result in results}, {0, 1})
         self.assertTrue(all("Alpha" in str(result["parent_text"]) for result in results))
+
+    def test_new_upload_gets_a_new_id_but_reuses_identical_content_embeddings(self) -> None:
+        service = self.service()
+        first = service.create_document("first.txt", "Credentials can be changed.", tenant_id="acme")
+        second = service.create_document("copy.txt", "Credentials can be changed.", tenant_id="acme")
+
+        self.assertNotEqual(first["document_id"], second["document_id"])
+        self.assertFalse(first["embedding_reused"])
+        self.assertTrue(second["embedding_reused"])
+        self.assertEqual(first["content_hash"], second["content_hash"])
+
+    def test_update_creates_a_new_version_and_hides_old_chunks_from_search(self) -> None:
+        service = self.service()
+        created = service.create_document("guide.txt", "Credentials can be changed.")
+        updated = service.update_document(str(created["document_id"]), "guide.txt", "Holidays are listed elsewhere.")
+
+        self.assertEqual(updated["version"], 2)
+        self.assertFalse(updated["embedding_reused"])
+        self.assertNotIn("Credentials", str(service.search("credential", limit=1)[0]["text"]))
+        self.assertEqual(service.search("holiday", limit=1)[0]["version"], 2)

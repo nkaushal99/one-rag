@@ -30,15 +30,19 @@ stored in Qdrant, and retrieved by cosine similarity. The API returns the
 retrieved evidence and the exact constructed context; an LLM answer is a later
 stage, so no provider key is required to use this MVP.
 
-`POST /v1/documents` accepts `document_id`, `source`, and `text`. Re-submitting
-the same `document_id` replaces its existing chunks. `POST /v1/query` accepts a
-`question` and optional `limit` (1–10), then returns ranked evidence, similarity
-scores, and a context string. Both are available in the running API's `/docs`.
+`POST /v1/documents` accepts `source`, `text`, and an optional `tenant_id`; it
+generates a UUID-based logical `document_id`. Exact-content uploads receive a
+new logical ID but reuse existing chunk vectors within the same tenant.
+`PUT /v1/documents/{document_id}` creates a new version of that logical document;
+an unchanged normalized-content hash is an idempotent no-op. `POST /v1/query`
+accepts a `question` and optional `limit` (1–10), then returns ranked evidence,
+similarity scores, and a context string. Both are available in the running API's
+`/docs`.
 
 Example:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/v1/documents -H "Content-Type: application/json" -d '{"document_id":"account-guide","source":"account-guide.txt","text":"Credentials can be modified from Account Settings."}'
+curl -X POST http://127.0.0.1:8000/v1/documents -H "Content-Type: application/json" -d '{"source":"account-guide.txt","text":"Credentials can be modified from Account Settings."}'
 curl -X POST http://127.0.0.1:8000/v1/query -H "Content-Type: application/json" -d '{"question":"How can I reset my password?"}'
 ```
 
@@ -107,6 +111,16 @@ The HTTP query endpoint accepts `neighbor_count` (0–3). Its
 child-only evidence. When multiple returned children share a parent, the
 constructed context includes that parent only once; the evidence list still
 shows each match and neighbor.
+
+## Document identity and deduplication
+
+For direct uploads, the API generates a new UUID-based `document_id` for every
+new logical document. It hashes normalized extracted text with SHA-256. The
+same content uploaded as a new document therefore keeps a distinct ID while
+reusing stored chunk vectors within the same `tenant_id`. A caller that intends
+to replace an existing document must use `PUT /v1/documents/{document_id}`;
+changed text receives a new version and old chunks become inactive, while an
+unchanged upload is skipped. Filenames are source metadata, never identity.
 
 ## What to inspect
 

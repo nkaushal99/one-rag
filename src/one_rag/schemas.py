@@ -2,15 +2,23 @@ from pydantic import BaseModel, Field
 
 
 class DocumentIn(BaseModel):
-    document_id: str = Field(min_length=1, max_length=200)
     source: str = Field(min_length=1, max_length=500)
     text: str = Field(min_length=1, max_length=100_000)
+    tenant_id: str = Field(default="local", min_length=1, max_length=200)
+
+
+class DocumentUpdateIn(DocumentIn):
+    pass
 
 
 class IngestedDocument(BaseModel):
     document_id: str
     source: str
     chunks_indexed: int
+    version: int
+    content_hash: str
+    embedding_reused: bool
+    unchanged: bool
 
 
 class QueryIn(BaseModel):

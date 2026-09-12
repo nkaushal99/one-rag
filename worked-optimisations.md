@@ -33,3 +33,17 @@
 - Before and after: before, only directly ranked text was returned; after,
   adjacent evidence and parent context can be requested explicitly.
 - ADR: `adr/004-stage-2-chunking-experiments.md`.
+
+## OPT-003: Avoid re-embedding identical uploads
+
+- Problem: repeated uploads and explicit updates could create duplicate vectors
+  or leave stale chunks searchable.
+- Planned approach: separate UUID document identity from normalized-content
+  hashing, version updates, and active-chunk filtering.
+- Completion criteria: exact content reuses vectors, updates increment a version,
+  and inactive versions are excluded from search.
+- Completed: 2026-09-13.
+- Implementation: added tenant-scoped SHA-256 hashes, generated IDs, POST/PUT
+  ingestion semantics, vector copying, version payloads, and active filtering.
+- Verification evidence: retrieval tests cover reuse and version replacement.
+- ADR: `adr/005-document-identity-and-deduplication.md`.

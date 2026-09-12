@@ -6,7 +6,7 @@ import redis
 from fastapi import FastAPI, HTTPException, Response, status
 
 from one_rag.retrieval import RetrievalService
-from one_rag.schemas import DocumentIn, Evidence, IngestedDocument, QueryIn, QueryResult
+from one_rag.schemas import DocumentIn, DocumentUpdateIn, Evidence, IngestedDocument, QueryIn, QueryResult
 from one_rag.settings import get_settings
 
 app = FastAPI(title="One RAG", version="0.1.0")
@@ -69,10 +69,19 @@ def readiness(response: Response) -> dict[str, object]:
 @app.post("/v1/documents", response_model=IngestedDocument, status_code=status.HTTP_201_CREATED, tags=["rag"])
 def ingest_document(document: DocumentIn) -> IngestedDocument:
     try:
-        chunks_indexed = RetrievalService().ingest(document.document_id, document.source, document.text)
+        result = RetrievalService().create_document(document.source, document.text, document.tenant_id)
     except ValueError as error:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
-    return IngestedDocument(document_id=document.document_id, source=document.source, chunks_indexed=chunks_indexed)
+    return IngestedDocument(**result)
+
+
+@app.put("/v1/documents/{document_id}", response_model=IngestedDocument, tags=["rag"])
+def update_document(document_id: str, document: DocumentUpdateIn) -> IngestedDocument:
+    try:
+        result = RetrievalService().update_document(document_id, document.source, document.text, document.tenant_id)
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    return IngestedDocument(**result)
 
 
 @app.post("/v1/query", response_model=QueryResult, tags=["rag"])

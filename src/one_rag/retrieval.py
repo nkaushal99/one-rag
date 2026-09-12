@@ -1,5 +1,6 @@
 from functools import lru_cache
-from uuid import NAMESPACE_URL, uuid5
+from hashlib import sha256
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from fastembed import TextEmbedding
 from qdrant_client import QdrantClient
@@ -41,30 +42,26 @@ class RetrievalService:
                 chunks.append({"text": child_text, "parent_chunk_index": parent_index, "child_chunk_index": child_index, "parent_text": parent_text})
         return chunks
 
-    def ingest(self, document_id: str, source: str, text: str) -> int:
-        chunks = self._chunks(text)
+    @staticmethod
+    def content_hash(text: str) -> str:
+        return sha256(" ".join(text.split()).encode("utf-8")).hexdigest()
+
+    def _write_chunks(self, document_id: str, source: str, chunks: list[dict[str, object]], vectors: list, tenant_id: str, content_hash: str, version: int) -> int:
         if not chunks:
             raise ValueError("Document text contains no indexable sentences.")
-        vectors = self._vectors([str(chunk["text"]) for chunk in chunks])
         if not self.client.collection_exists(self.settings.collection):
-            self.client.create_collection(
-                self.settings.collection,
-                vectors_config=VectorParams(size=len(vectors[0]), distance=Distance.COSINE),
-            )
-        self.client.delete(
-            collection_name=self.settings.collection,
-            points_selector=Filter(
-                must=[FieldCondition(key="document_id", match=MatchValue(value=document_id))],
-            ),
-            wait=True,
-        )
+            self.client.create_collection(self.settings.collection, vectors_config=VectorParams(size=len(vectors[0]), distance=Distance.COSINE))
         points = [
             PointStruct(
-                id=str(uuid5(NAMESPACE_URL, f"{document_id}:{index}")),
+                id=str(uuid5(NAMESPACE_URL, f"{document_id}:{version}:{index}")),
                 vector=vector,
                 payload={
                     "document_id": document_id,
                     "source": source,
+                    "tenant_id": tenant_id,
+                    "version": version,
+                    "content_hash": content_hash,
+                    "is_active": True,
                     "chunk_index": index,
                     "chunking_strategy": self.settings.chunking_strategy,
                     "text": chunk["text"],
@@ -78,10 +75,24 @@ class RetrievalService:
         self.client.upsert(collection_name=self.settings.collection, points=points, wait=True)
         return len(points)
 
+    def ingest(self, document_id: str, source: str, text: str) -> int:
+        chunks = self._chunks(text)
+        vectors = self._vectors([str(chunk["text"]) for chunk in chunks])
+        if self.client.collection_exists(self.settings.collection):
+            self.client.delete(
+                collection_name=self.settings.collection,
+                points_selector=Filter(
+                    must=[FieldCondition(key="document_id", match=MatchValue(value=document_id))],
+                ),
+                wait=True,
+            )
+        return self._write_chunks(document_id, source, chunks, vectors, "local", self.content_hash(text), 1)
+
     def _result(self, point, retrieval_reason: str, score: float | None = None, include_parent_context: bool = False) -> dict[str, object]:
         return {
             "document_id": point.payload["document_id"],
             "source": point.payload["source"],
+            "version": point.payload.get("version", 1),
             "chunk_index": point.payload["chunk_index"],
             "text": point.payload["text"],
             "score": point.score if score is None else score,
@@ -91,7 +102,7 @@ class RetrievalService:
             "parent_text": point.payload.get("parent_text") if include_parent_context else None,
         }
 
-    def _all_records(self):
+    def _all_records(self, with_vectors: bool = False):
         records = []
         offset = None
         while True:
@@ -99,12 +110,61 @@ class RetrievalService:
                 collection_name=self.settings.collection,
                 offset=offset,
                 with_payload=True,
-                with_vectors=False,
+                with_vectors=with_vectors,
                 limit=100,
             )
             records.extend(page)
             if offset is None:
                 return records
+
+    def _content_records(self, tenant_id: str, content_hash: str):
+        return [record for record in self._all_records(with_vectors=True) if record.payload.get("tenant_id") == tenant_id and record.payload.get("content_hash") == content_hash]
+
+    def _copy_records(self, source_records, document_id: str, source: str, tenant_id: str, content_hash: str, version: int) -> int:
+        source_records.sort(key=lambda record: int(record.payload["chunk_index"]))
+        chunks = [{key: record.payload.get(key) for key in ("text", "parent_chunk_index", "child_chunk_index", "parent_text")} for record in source_records]
+        vectors = [record.vector for record in source_records]
+        return self._write_chunks(document_id, source, chunks, vectors, tenant_id, content_hash, version)
+
+    def create_document(self, source: str, text: str, tenant_id: str = "local") -> dict[str, object]:
+        content_hash = self.content_hash(text)
+        document_id = f"doc_{uuid4().hex}"
+        source_records = self._content_records(tenant_id, content_hash) if self.client.collection_exists(self.settings.collection) else []
+        if source_records:
+            source_id = source_records[0].payload["document_id"]
+            source_version = source_records[0].payload.get("version", 1)
+            source_records = [record for record in source_records if record.payload.get("document_id") == source_id and record.payload.get("version", 1) == source_version]
+            chunks_indexed = self._copy_records(source_records, document_id, source, tenant_id, content_hash, 1)
+            embedding_reused = True
+        else:
+            chunks = self._chunks(text)
+            chunks_indexed = self._write_chunks(document_id, source, chunks, self._vectors([str(chunk["text"]) for chunk in chunks]), tenant_id, content_hash, 1)
+            embedding_reused = False
+        return {"document_id": document_id, "source": source, "chunks_indexed": chunks_indexed, "version": 1, "content_hash": content_hash, "embedding_reused": embedding_reused, "unchanged": False}
+
+    def update_document(self, document_id: str, source: str, text: str, tenant_id: str = "local") -> dict[str, object]:
+        records = [record for record in self._all_records(with_vectors=False) if record.payload.get("document_id") == document_id and record.payload.get("tenant_id", "local") == tenant_id]
+        active_records = [record for record in records if record.payload.get("is_active", True)]
+        if not active_records:
+            raise ValueError("Document does not exist for this tenant.")
+        content_hash = self.content_hash(text)
+        current_hash = active_records[0].payload.get("content_hash")
+        current_version = max(int(record.payload.get("version", 1)) for record in records)
+        if current_hash == content_hash:
+            return {"document_id": document_id, "source": source, "chunks_indexed": len(active_records), "version": current_version, "content_hash": content_hash, "embedding_reused": True, "unchanged": True}
+        self.client.set_payload(collection_name=self.settings.collection, payload={"is_active": False}, points=Filter(must=[FieldCondition(key="document_id", match=MatchValue(value=document_id))]), wait=True)
+        source_records = self._content_records(tenant_id, content_hash)
+        new_version = current_version + 1
+        if source_records:
+            source_id = source_records[0].payload["document_id"]
+            source_version = source_records[0].payload.get("version", 1)
+            chunks_indexed = self._copy_records([record for record in source_records if record.payload.get("document_id") == source_id and record.payload.get("version", 1) == source_version], document_id, source, tenant_id, content_hash, new_version)
+            embedding_reused = True
+        else:
+            chunks = self._chunks(text)
+            chunks_indexed = self._write_chunks(document_id, source, chunks, self._vectors([str(chunk["text"]) for chunk in chunks]), tenant_id, content_hash, new_version)
+            embedding_reused = False
+        return {"document_id": document_id, "source": source, "chunks_indexed": chunks_indexed, "version": new_version, "content_hash": content_hash, "embedding_reused": embedding_reused, "unchanged": False}
 
     def search(self, question: str, limit: int, neighbor_count: int = 0, include_parent_context: bool = True) -> list[dict[str, object]]:
         if not self.client.collection_exists(self.settings.collection):
@@ -113,6 +173,7 @@ class RetrievalService:
         points = self.client.query_points(
             collection_name=self.settings.collection,
             query=query_vector,
+            query_filter=Filter(must=[FieldCondition(key="is_active", match=MatchValue(value=True))]),
             limit=limit,
         ).points
         results = [self._result(point, "match", include_parent_context=include_parent_context) for point in points]
