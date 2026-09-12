@@ -26,7 +26,8 @@
   reasons, and a repeatable test against parent-child chunks.
 - Completed: 2026-09-12.
 - Implementation: added `parent_child`, `neighbor_count`, and
-  `include_parent_context` to the retrieval pipeline, API, and CLI.
+  `include_parent_context` to the retrieval pipeline, API, and CLI; selected it
+  as the production strategy in the unified `documents` collection.
 - Verification evidence: unit test confirms one child match expands to its
   sibling from the same parent only; the enterprise handbook is the live corpus.
 - Before and after: before, only directly ranked text was returned; after,

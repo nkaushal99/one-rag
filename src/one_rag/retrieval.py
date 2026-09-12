@@ -106,7 +106,7 @@ class RetrievalService:
             if offset is None:
                 return records
 
-    def search(self, question: str, limit: int, neighbor_count: int = 0, include_parent_context: bool = False) -> list[dict[str, object]]:
+    def search(self, question: str, limit: int, neighbor_count: int = 0, include_parent_context: bool = True) -> list[dict[str, object]]:
         if not self.client.collection_exists(self.settings.collection):
             return []
         query_vector = self._vectors([question])[0]

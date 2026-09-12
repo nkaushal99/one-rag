@@ -69,7 +69,8 @@ Set `CHUNKING_STRATEGY` in `.env` to `fixed`, `fixed_overlap`, `sentence`,
 `sentence_window`, `paragraph`, `section`, or `parent_child`, then index again before comparing
 search results. `fixed` uses `FIXED_CHUNK_SIZE=500` lexical tokens; `fixed_overlap`
 reuses `FIXED_CHUNK_OVERLAP=100` tokens from the preceding chunk. The default
-`sentence_window` uses two sentences with one overlapping sentence.
+production strategy is `parent_child`, which uses two-sentence child windows
+with one overlapping sentence.
 
 Run the same corpus and three answer-completeness checks through every strategy:
 
@@ -85,21 +86,25 @@ cosine similarity ranks relevance but is not an accuracy percentage. The
 evaluation collections (`chunking_eval_*`) are deliberately retained in Qdrant
 for inspection.
 
+`documents` is the single production collection. Users query it without choosing
+a corpus or collection; every result reports its source document. Experiments
+remain isolated in `chunking_eval_*` collections and are not part of normal
+search.
+
 `parent_child` treats each Markdown or numbered all-caps section as a parent and
-indexes overlapping two-sentence children. Search the small children, then add
-the surrounding child windows with `--neighbors 1`; use `--parent-context` to
-return the complete parent section. Try it against the included large synthetic
-handbook without mixing it into the normal collection:
+indexes overlapping two-sentence children. Search returns the complete parent
+section by default; add the surrounding child windows with `--neighbors 1`.
+Use `--no-parent-context` only when the smaller child text is preferred. To
+rebuild the current production handbook:
 
 ```bash
-export CHUNKING_STRATEGY="parent_child"
-export COLLECTION="parent_child_handbook"
 uv run --extra retrieval rag.py index scripts
-uv run --extra retrieval rag.py ask "What is the retry policy for a P1 incident?" --limit 1 --neighbors 1 --parent-context
+uv run --extra retrieval rag.py ask "What is the retry policy for a P1 incident?" --limit 1 --neighbors 1
 ```
 
-The HTTP query endpoint accepts the equivalent `neighbor_count` (0–3) and
-`include_parent_context` fields.
+The HTTP query endpoint accepts `neighbor_count` (0–3). Its
+`include_parent_context` field defaults to `true` and can be set to `false` for
+child-only evidence.
 
 ## What to inspect
 

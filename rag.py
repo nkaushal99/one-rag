@@ -28,7 +28,8 @@ def main() -> None:
     ask_parser.add_argument("question")
     ask_parser.add_argument("--limit", type=int, default=3)
     ask_parser.add_argument("--neighbors", type=int, default=0)
-    ask_parser.add_argument("--parent-context", action="store_true")
+    ask_parser.add_argument("--no-parent-context", action="store_false", dest="parent_context")
+    ask_parser.set_defaults(parent_context=True)
     args = parser.parse_args()
     if args.command == "index":
         index(args.folder)

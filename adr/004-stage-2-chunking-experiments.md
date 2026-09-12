@@ -20,9 +20,9 @@ one-sentence overlap, paragraphs, and Markdown-heading sections. Run
 strategy. Record chunk counts, top scores, retrieved chunk indexes, and whether
 the top-three context includes every expected answer phrase.
 
-The default remains `sentence_window` until the measured corpus says otherwise.
-The evaluator retains separate Qdrant collections named `chunking_eval_*` so the
-retrieved evidence remains inspectable.
+The production `documents` collection uses `parent_child`; users never select a
+Qdrant collection. The evaluator retains separate Qdrant collections named
+`chunking_eval_*` so the retrieved evidence remains inspectable.
 
 For the larger enterprise handbook, `parent_child` keeps each structural section
 as a parent while indexing overlapping two-sentence child windows. Optional

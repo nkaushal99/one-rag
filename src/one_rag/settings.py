@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     llm_provider: str = ""
     llm_model: str = ""
     reranker_model: str = ""
-    chunking_strategy: str = "sentence_window"
+    chunking_strategy: str = "parent_child"
     fixed_chunk_size: int = 500
     fixed_chunk_overlap: int = 100
     sentence_window_size: int = 2
