@@ -10,11 +10,15 @@ from one_rag.schemas import Evidence
 
 class FakeRetrievalService:
     include_parent_context: bool | None = None
+    limit: int | None = None
+    neighbor_count: int | None = None
 
     def create_document(self, source: str, text: str, tenant_id: str) -> dict[str, object]:
         return {"document_id": "doc_generated", "source": source, "chunks_indexed": 2, "version": 1, "content_hash": "hash", "embedding_reused": False, "unchanged": False}
 
     def search(self, question: str, limit: int, neighbor_count: int = 0, include_parent_context: bool = False) -> list[dict[str, object]]:
+        self.limit = limit
+        self.neighbor_count = neighbor_count
         self.include_parent_context = include_parent_context
         return [{"document_id": "handbook", "source": "handbook.txt", "chunk_index": 0, "text": "Change credentials in Account Settings.", "score": 0.91}]
 
@@ -53,6 +57,8 @@ class ApiTests(TestCase):
         retrieval_service.return_value = service
         response = self.client.post("/v1/query", json={"question": "How do I recover?"})
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(service.limit, 3)
+        self.assertEqual(service.neighbor_count, 1)
         self.assertTrue(service.include_parent_context)
 
     def test_context_includes_an_expanded_parent_only_once(self) -> None:

@@ -13,7 +13,7 @@ class GeminiConfigurationTests(TestCase):
         settings = Settings(google_api_key=SecretStr("test-key"))
         AnswerService(settings, retrieval=object())
         chat_model.assert_called_once_with(
-            model="gemini-2.5-flash-lite",
+            model="gemini-3.5-flash-lite",
             temperature=0,
             api_key="test-key",
         )

@@ -4,9 +4,11 @@ import asyncio
 import copy
 import importlib.metadata
 import re
+import threading
+import time
 from dataclasses import dataclass
 from statistics import fmean
-from typing import Any
+from typing import Any, Callable
 
 from fastembed import TextEmbedding
 
@@ -20,19 +22,95 @@ RAGAS_METRICS = {
 ABSTENTION = "i do not know based on the provided context."
 
 
+class RequestPacer:
+    """Share one request-per-minute budget between answer and judge calls."""
+
+    def __init__(self, requests_per_minute: int) -> None:
+        if requests_per_minute < 1:
+            raise ValueError("RAGAS requests per minute must be at least 1.")
+        self.interval_seconds = 60 / requests_per_minute
+        self.next_allowed = 0.0
+        self.lock = threading.Lock()
+
+    def reserve(self) -> float:
+        with self.lock:
+            now = time.monotonic()
+            allowed = max(now, self.next_allowed)
+            self.next_allowed = allowed + self.interval_seconds
+        return max(0, allowed - now)
+
+    def wait(self) -> float:
+        delay = self.reserve()
+        if delay:
+            time.sleep(delay)
+        return delay
+
+    async def wait_async(self) -> float:
+        delay = self.reserve()
+        if delay:
+            await asyncio.sleep(delay)
+        return delay
+
+    async def defer(self, delay_seconds: float) -> None:
+        with self.lock:
+            self.next_allowed = max(self.next_allowed, time.monotonic() + delay_seconds)
+        await asyncio.sleep(delay_seconds)
+
+
+def retry_delay_seconds(error: Exception, maximum: int) -> int:
+    match = re.search(r"retry (?:in|after)\s+([0-9.]+)\s*(?:seconds?|s)", str(error), re.IGNORECASE)
+    return min(maximum, max(1, int(float(match.group(1)) + 1))) if match else 1
+
+
+def is_rate_limited(error: Exception) -> bool:
+    text = str(error).lower()
+    return "429" in text or "resourceexhausted" in text or "quota" in text
+
+
+class PacedLangchainLLMWrapper:
+    """Adds provider-aware pacing to RAGAS's LangChain wrapper."""
+
+    def __init__(self, langchain_llm: Any, pacer: RequestPacer, max_retry_delay_seconds: int, log: Callable[[str], None]) -> None:
+        from ragas.llms import LangchainLLMWrapper
+
+        class Wrapper(LangchainLLMWrapper):
+            async def agenerate_text(inner_self, *args: Any, **kwargs: Any):
+                for attempt in range(3):
+                    delay = await pacer.wait_async()
+                    if delay:
+                        log(f"RAGAS judge: pacing for {delay:.1f}s")
+                    try:
+                        return await super(Wrapper, inner_self).agenerate_text(*args, **kwargs)
+                    except Exception as error:
+                        if not is_rate_limited(error):
+                            raise
+                        retry_delay = retry_delay_seconds(error, max_retry_delay_seconds)
+                        if attempt == 2:
+                            raise
+                        log(f"RAGAS judge: provider rate limit; waiting {retry_delay}s before retrying")
+                        await pacer.defer(retry_delay)
+
+        self.wrapper = Wrapper(langchain_llm)
+
+    def as_ragas(self):
+        return self.wrapper
+
+
 def validate_manifest(manifest: dict[str, Any]) -> None:
-    required = {"dataset_version", "judge", "embedding", "metrics", "configurations"}
+    required = {"dataset_version", "judge", "embedding", "rate_limit", "metrics", "configurations"}
     missing = required - set(manifest)
     if missing:
         raise ValueError(f"Manifest is missing: {', '.join(sorted(missing))}.")
     judge = manifest["judge"]
     embedding = manifest["embedding"]
-    if judge.get("model") != "gemini-2.5-flash-lite" or judge.get("temperature") != 0:
-        raise ValueError("The RAGAS judge must remain gemini-2.5-flash-lite at temperature 0.")
+    if judge.get("model") != "gemini-3.5-flash-lite" or judge.get("temperature") != 0:
+        raise ValueError("The RAGAS judge must remain gemini-3.5-flash-lite at temperature 0.")
     if embedding.get("model") != "BAAI/bge-small-en-v1.5":
         raise ValueError("The RAGAS embedding model must remain BAAI/bge-small-en-v1.5.")
     if not re.fullmatch(r"[0-9a-f]{40}", str(embedding.get("revision", ""))):
         raise ValueError("The RAGAS embedding revision must be a 40-character Git SHA.")
+    if manifest["rate_limit"].get("requests_per_minute") != 12 or manifest["rate_limit"].get("max_retry_delay_seconds") != 60:
+        raise ValueError("The RAGAS rate-limit policy must remain 12 RPM with a 60-second maximum retry delay.")
     if list(manifest["metrics"]) != list(RAGAS_METRICS):
         raise ValueError("The RAGAS metric order must match the fixed baseline.")
     names = [configuration["name"] for configuration in manifest["configurations"]]
@@ -108,9 +186,10 @@ def ragas_samples(rows: list[dict[str, Any]], raw_results: list[dict[str, Any]])
 def evaluate_answerable(rows: list[dict[str, Any]], raw_results: list[dict[str, Any]], judge: Any, embeddings: Any) -> list[dict[str, float]]:
     from ragas import evaluate
     from ragas.metrics import answer_correctness, answer_relevancy, context_precision, context_recall, faithfulness
+    from ragas.run_config import RunConfig
 
     metrics = [copy.deepcopy(metric) for metric in (context_precision, context_recall, faithfulness, answer_correctness, answer_relevancy)]
-    result = evaluate(ragas_samples(rows, raw_results), metrics=metrics, llm=judge, embeddings=embeddings, raise_exceptions=True, show_progress=False)
+    result = evaluate(ragas_samples(rows, raw_results), metrics=metrics, llm=judge, embeddings=embeddings, run_config=RunConfig(max_workers=1, max_retries=1), raise_exceptions=True, show_progress=False)
     return map_metric_scores(result.scores)
 
 

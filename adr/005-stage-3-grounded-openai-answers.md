@@ -9,7 +9,7 @@ Accepted
 Expose `POST /v1/answer`. It reuses the existing retrieval, neighbor-expansion,
 and parent-context flow, builds the same deduplicated context returned by
 `/v1/query`, then invokes Gemini through LangChain using
-`gemini-2.5-flash-lite`. The prompt requires the
+`gemini-3.5-flash-lite`. The prompt requires the
 model to use only that context, identify missing evidence, and cite source/chunk
 labels. The response includes the answer, context, and evidence.
 

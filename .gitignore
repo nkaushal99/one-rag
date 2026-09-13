@@ -5,3 +5,4 @@ __pycache__/
 .pytest_cache/
 evals/*.log
 evals/golden-ragas-report*.json
+evals/golden-ragas-checkpoint*.json

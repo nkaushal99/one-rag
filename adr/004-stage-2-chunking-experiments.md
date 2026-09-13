@@ -21,8 +21,11 @@ strategy. Record chunk counts, top scores, retrieved chunk indexes, and whether
 the top-three context includes every expected answer phrase.
 
 The production `documents` collection uses `parent_child`; users never select a
-Qdrant collection. The evaluator retains separate Qdrant collections named
-`chunking_eval_*` so the retrieved evidence remains inspectable.
+Qdrant collection. The selected retrieval profile is
+`parent_child_top3_neighbor_parent`: three ranked child matches, one immediate
+same-parent neighbour around each match, and deduplicated full-parent context.
+The evaluator retains separate Qdrant collections named `chunking_eval_*` so
+the retrieved evidence remains inspectable.
 
 For the larger enterprise handbook, `parent_child` keeps each structural section
 as a parent while indexing overlapping two-sentence child windows. Optional
@@ -32,6 +35,6 @@ parent context returns the full section after a child match.
 ## Consequences
 
 The experiment exposes answer completeness as well as ranking. The simple
-sentence-window strategy is a context-expansion baseline; parent-child chunks
-and neighbor retrieval remain follow-up strategies if completeness is still
-poor.
+sentence-window strategy remains a context-expansion baseline. The selected
+parent-child profile prioritises coherent section-level evidence while keeping
+the initially retrieved child matches inspectable.

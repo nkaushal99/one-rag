@@ -66,6 +66,14 @@ stored text, preserving the chunks while adding `document_id`, `source`, and
 4. Use `POST /v1/documents` to index text and `POST /v1/query` or
    `POST /v1/answer` to retrieve or answer questions.
 
+## API development
+
+The API service bind-mounts `./src` and runs Uvicorn with reload enabled.
+After the initial `docker compose up -d --build api`, changes below `src/`
+reload the API automatically; no further Compose rebuild or restart is needed.
+Changes to dependencies, `pyproject.toml`, the Dockerfile, or Compose settings
+still require `docker compose up -d --build api`.
+
 The API is the only supported application interface; there is no standalone
 retrieval CLI.
 
@@ -75,8 +83,10 @@ Set `CHUNKING_STRATEGY` in `.env` to `fixed`, `fixed_overlap`, `sentence`,
 `sentence_window`, `paragraph`, `section`, or `parent_child`, then index again before comparing
 search results. `fixed` uses `FIXED_CHUNK_SIZE=500` lexical tokens; `fixed_overlap`
 reuses `FIXED_CHUNK_OVERLAP=100` tokens from the preceding chunk. The default
-production strategy is `parent_child`, which uses two-sentence child windows
-with one overlapping sentence.
+production strategy is `parent_child_top3_neighbor_parent`: parent-child
+indexing with two-sentence child windows and one overlapping sentence, top-3
+retrieval, one same-section neighbor on either side where available, and the
+full parent section as LLM context.
 
 Run the same corpus and three answer-completeness checks through every strategy:
 
@@ -98,35 +108,48 @@ remain isolated in `chunking_eval_*` collections and are not part of normal
 search.
 
 `parent_child` treats each Markdown or numbered all-caps section as a parent and
-indexes overlapping two-sentence children. `/v1/query` and `/v1/answer` return
-the complete parent section by default; use `neighbor_count` to add surrounding
-child windows and set `include_parent_context` to `false` for child-only
-evidence. For example:
+indexes overlapping two-sentence children. `/v1/query` and `/v1/answer` now
+default to the evaluated winner: top-3 child matches, one same-section neighbor
+on either side, and deduplicated parent-section context. Override `limit`,
+`neighbor_count`, or `include_parent_context` only for an explicit experiment.
+For example:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/v1/documents -H "Content-Type: application/json" -d '{"source":"enterprise-platform-handbook.txt","text":"..."}'
-curl -X POST http://127.0.0.1:8000/v1/answer -H "Content-Type: application/json" -d '{"question":"What is the retry policy for a P1 incident?","limit":1,"neighbor_count":1}'
+curl -X POST http://127.0.0.1:8000/v1/answer -H "Content-Type: application/json" -d '{"question":"What are the P1 communication deadlines?"}'
 ```
 
-The HTTP query endpoint accepts `neighbor_count` (0–3). Its
-`include_parent_context` field defaults to `true` and can be set to `false` for
-child-only evidence. When multiple returned children share a parent, the
-constructed context includes that parent only once; the evidence list still
-shows each match and neighbor.
+The HTTP query endpoint defaults to `limit=3`, `neighbor_count=1`, and
+`include_parent_context=true`. It accepts `neighbor_count` (0–3) for explicit
+experiments. When multiple returned children share a parent, the constructed
+context includes that parent only once; the evidence list still shows each match
+and neighbor.
 
 ## Reproducible RAGAS evaluation
 
 `evals/golden-ragas-dataset.json` has six answerable and two deliberately
 unanswerable handbook questions. `evals/golden-ragas-manifest.json` fixes the
-judge to `gemini-2.5-flash-lite` at temperature zero and the semantic evaluator
+judge to `gemini-3.5-flash-lite` at temperature zero and the semantic evaluator
 to FastEmbed `BAAI/bge-small-en-v1.5` at its recorded immutable revision.
 
 With Qdrant running and `GOOGLE_API_KEY` in `.env`, run all five isolated HTTP
-configurations:
+configurations against the already-running API on port 8000:
 
 ```bash
 uv run --extra retrieval scripts/evaluate_ragas.py
 ```
+
+Use `--base-url http://127.0.0.1:<port>` only if the API is served elsewhere.
+The runner logs collection cleanup, ingestion, each answer, RAGAS scoring,
+per-configuration summary, and final report location. It uses the dedicated
+`/v1/evaluations/documents` and `/v1/evaluations/answer` endpoints so each
+configuration remains in its own collection without restarting the API.
+
+The runner stays under the Gemini free-tier request limit with a shared 12 RPM
+budget for answer generation and RAGAS judge calls. It writes ignored local
+checkpoint state after raw answers and after each completed configuration.
+Re-run the same command after a quota interruption to resume; use `--fresh` to
+discard that checkpoint intentionally.
 
 It creates `golden_eval_*` Qdrant collections and writes the ignored local
 `evals/golden-ragas-report.json`. The report includes raw answers, contexts,

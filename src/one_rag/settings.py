@@ -14,13 +14,15 @@ class Settings(BaseSettings):
     collection: str = "documents"
     embedding_model: str = "BAAI/bge-small-en-v1.5"
     llm_provider: str = "gemini"
-    llm_model: str = "gemini-2.5-flash-lite"
+    llm_model: str = "gemini-3.5-flash-lite"
     llm_temperature: float = 0
     google_api_key: SecretStr | None = None
-    ragas_judge_model: str = "gemini-2.5-flash-lite"
+    ragas_judge_model: str = "gemini-3.5-flash-lite"
     ragas_judge_temperature: float = 0
     ragas_embedding_model: str = "BAAI/bge-small-en-v1.5"
     ragas_embedding_revision: str = "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
+    ragas_requests_per_minute: int = 12
+    ragas_max_retry_delay_seconds: int = 60
     reranker_model: str = ""
     chunking_strategy: str = "parent_child"
     fixed_chunk_size: int = 500

@@ -14,7 +14,7 @@ boundaries, adjacent facts, legacy-policy traps, and unanswerable questions.
 
 Keep `evals/golden-ragas-dataset.json` (six answerable and two negative rows)
 and `evals/golden-ragas-manifest.json` in version control. The manifest fixes
-the Gemini judge to `gemini-2.5-flash-lite` at temperature zero and fixes the
+the Gemini judge to `gemini-3.5-flash-lite` at temperature zero and fixes the
 semantic evaluator to `BAAI/bge-small-en-v1.5` at immutable Hugging Face
 revision `5c38ec7c405ec4b44b94cc5a9bb96e735b38267a`. The runner also records the
 resolved RAGAS, FastEmbed, and LangChain Google package versions.
@@ -23,12 +23,22 @@ The runner uses a FastEmbed-to-RAGAS adapter. This keeps evaluator embeddings
 on the existing ONNX/FastEmbed path and avoids installing PyTorch merely for
 RAGAS semantic metrics.
 
+Gemini's free tier permits only 15 generation requests per minute. The runner
+therefore uses one RAGAS worker and a shared 12-RPM request budget across
+application answers and judge calls. Gemini client retries are disabled so a
+provider-provided retry delay is honored explicitly, capped at 60 seconds,
+instead of producing a concurrent short-retry storm. The runner checkpoints
+raw answers before scoring and each completed configuration; it resumes from
+that ignored local checkpoint after interruption without re-indexing or
+regenerating completed work.
+
 Answerable rows receive Context Precision, Context Recall, Faithfulness,
 Answer Accuracy, and Answer Relevancy. Negatives are not mixed into those
 semantic means: they have no factual reference answer, so they are evaluated
 with the deterministic required abstention sentence instead.
 
-Five configurations run through `POST /v1/documents` and `POST /v1/answer`,
+Five configurations run through `POST /v1/evaluations/documents` and
+`POST /v1/evaluations/answer`,
 each in an isolated `golden_eval_<configuration>` Qdrant collection:
 
 1. sentence-window top-1 child;

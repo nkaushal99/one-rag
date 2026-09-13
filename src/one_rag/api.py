@@ -8,10 +8,17 @@ from fastapi import FastAPI, HTTPException, Response, status
 from one_rag.answering import AnswerService
 from one_rag.context import build_context
 from one_rag.retrieval import RetrievalService
-from one_rag.schemas import AnswerResult, DocumentIn, DocumentUpdateIn, Evidence, IngestedDocument, QueryIn, QueryResult
-from one_rag.settings import get_settings
+from one_rag.schemas import AnswerResult, DocumentIn, DocumentUpdateIn, EvaluationDocumentIn, EvaluationQueryIn, Evidence, IngestedDocument, QueryIn, QueryResult
+from one_rag.settings import Settings, get_settings
 
 app = FastAPI(title="One RAG", version="0.1.0")
+
+
+def evaluation_settings(collection: str, chunking_strategy: str | None = None) -> Settings:
+    updates = {"collection": collection}
+    if chunking_strategy:
+        updates["chunking_strategy"] = chunking_strategy
+    return get_settings().model_copy(update=updates)
 
 
 @app.get("/health/live", tags=["health"])
@@ -83,6 +90,23 @@ def query_documents(query: QueryIn) -> QueryResult:
 def answer_question(query: QueryIn) -> AnswerResult:
     try:
         result = AnswerService().answer(query.question, query.limit, query.neighbor_count, query.include_parent_context)
+    except (RuntimeError, ValueError) as error:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error)) from error
+    return AnswerResult(question=query.question, **result)
+
+
+@app.post("/v1/evaluations/documents", response_model=IngestedDocument, status_code=status.HTTP_201_CREATED, tags=["evaluation"])
+def ingest_evaluation_document(document: EvaluationDocumentIn) -> IngestedDocument:
+    settings = evaluation_settings(document.collection, document.chunking_strategy)
+    result = RetrievalService(settings).create_document(document.source, document.text, document.tenant_id)
+    return IngestedDocument(**result)
+
+
+@app.post("/v1/evaluations/answer", response_model=AnswerResult, tags=["evaluation"])
+def answer_evaluation_question(query: EvaluationQueryIn) -> AnswerResult:
+    settings = evaluation_settings(query.collection)
+    try:
+        result = AnswerService(settings=settings, retrieval=RetrievalService(settings)).answer(query.question, query.limit, query.neighbor_count, query.include_parent_context)
     except (RuntimeError, ValueError) as error:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error)) from error
     return AnswerResult(question=query.question, **result)

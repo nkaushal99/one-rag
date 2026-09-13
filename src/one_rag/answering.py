@@ -17,7 +17,7 @@ class AnswerService:
             raise ValueError("LLM_PROVIDER must be 'gemini'.")
         self.retrieval = retrieval or RetrievalService(self.settings)
         api_key = self.settings.google_api_key.get_secret_value() if self.settings.google_api_key else None
-        self.model = ChatGoogleGenerativeAI(model=self.settings.llm_model or "gemini-2.5-flash-lite", temperature=self.settings.llm_temperature, api_key=api_key)
+        self.model = ChatGoogleGenerativeAI(model=self.settings.llm_model or "gemini-3.5-flash-lite", temperature=self.settings.llm_temperature, api_key=api_key)
 
     def answer(self, question: str, limit: int, neighbor_count: int, include_parent_context: bool) -> dict[str, object]:
         evidence = self.retrieval.search(question, limit, neighbor_count, include_parent_context)

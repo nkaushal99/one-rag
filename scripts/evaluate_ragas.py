@@ -2,20 +2,18 @@
 
 import argparse
 import json
-import os
-import subprocess
-import sys
 import time
 from pathlib import Path
 from statistics import fmean
 
 import httpx
 from langchain_google_genai import ChatGoogleGenerativeAI
-from ragas.llms import LangchainLLMWrapper
 
 from one_rag.ragas_evaluation import (
     FastEmbedRagasEmbeddings,
+    PacedLangchainLLMWrapper,
     RAGAS_METRICS,
+    RequestPacer,
     aggregate,
     evaluate_answerable,
     is_abstention,
@@ -33,17 +31,33 @@ def load_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def wait_for_server(base_url: str, process: subprocess.Popen[str]) -> None:
-    for _ in range(60):
-        if process.poll() is not None:
-            raise RuntimeError("The evaluation API server stopped before it became available.")
+def load_checkpoint(path: Path, manifest: dict) -> dict:
+    if not path.exists():
+        return {"manifest": manifest, "completed": [], "pending": None}
+    checkpoint = load_json(path)
+    if checkpoint.get("manifest") != manifest:
+        raise RuntimeError("Checkpoint manifest differs from the current baseline. Use --fresh to discard it.")
+    return checkpoint
+
+
+def save_checkpoint(path: Path, checkpoint: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(checkpoint, indent=2), encoding="utf-8")
+
+
+def log(message: str) -> None:
+    print(f"[{time.strftime('%H:%M:%S')}] {message}", flush=True)
+
+
+def wait_for_server(base_url: str) -> None:
+    for _ in range(20):
         try:
             if httpx.get(f"{base_url}/health/live", timeout=1).status_code == 200:
                 return
         except httpx.HTTPError:
             pass
         time.sleep(0.5)
-    raise RuntimeError("Timed out waiting for the evaluation API server.")
+    raise RuntimeError(f"Timed out waiting for the API at {base_url}.")
 
 
 def clear_collection(qdrant_url: str, collection: str) -> None:
@@ -52,67 +66,63 @@ def clear_collection(qdrant_url: str, collection: str) -> None:
         response.raise_for_status()
 
 
-def run_http_configuration(configuration: dict, dataset: list[dict], handbook: str, port: int, settings: Settings) -> dict:
+def run_http_configuration(configuration: dict, dataset: list[dict], handbook: str, base_url: str, settings: Settings, pacer: RequestPacer) -> dict:
     collection = f"golden_eval_{configuration['name']}"
+    log(f"{configuration['name']}: deleting collection {collection}")
     clear_collection(settings.qdrant_url, collection)
-    environment = os.environ | {
-        "COLLECTION": collection,
-        "CHUNKING_STRATEGY": configuration["chunking_strategy"],
-        "QDRANT_URL": settings.qdrant_url,
-    }
-    process = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "one_rag.api:app", "--host", "127.0.0.1", "--port", str(port)],
-        cwd=ROOT,
-        env=environment,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    base_url = f"http://127.0.0.1:{port}"
-    try:
-        wait_for_server(base_url, process)
-        ingestion = httpx.post(f"{base_url}/v1/documents", json={"source": "rag_test_enterprise_platform_handbook.txt", "text": handbook}, timeout=180)
-        ingestion.raise_for_status()
-        raw_rows = []
-        for row in dataset:
-            started = time.perf_counter()
-            response = httpx.post(f"{base_url}/v1/answer", json={
-                "question": row["question"],
-                "limit": configuration["limit"],
-                "neighbor_count": configuration["neighbor_count"],
-                "include_parent_context": configuration["include_parent_context"],
-            }, timeout=180)
-            response.raise_for_status()
-            result = response.json()
-            raw_rows.append({
-                "id": row["id"],
-                "question": row["question"],
-                "answerable": row["answerable"],
-                "latency_ms": round((time.perf_counter() - started) * 1000, 2),
-                "answer": result["answer"],
-                "context": result["context"],
-                "evidence": result["evidence"],
-                "citations": [f"{item['source']}#{item['chunk_index']}" for item in result["evidence"]],
-            })
-        return {"collection": collection, "ingestion": ingestion.json(), "rows": raw_rows}
-    finally:
-        process.terminate()
-        try:
-            process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            process.kill()
+    log(f"{configuration['name']}: indexing handbook with {configuration['chunking_strategy']}")
+    ingestion = httpx.post(f"{base_url}/v1/evaluations/documents", json={
+        "source": "rag_test_enterprise_platform_handbook.txt",
+        "text": handbook,
+        "collection": collection,
+        "chunking_strategy": configuration["chunking_strategy"],
+    }, timeout=180)
+    ingestion.raise_for_status()
+    log(f"{configuration['name']}: indexed {ingestion.json()['chunks_indexed']} chunks; answering {len(dataset)} golden questions")
+    raw_rows = []
+    for position, row in enumerate(dataset, start=1):
+        delay = pacer.wait()
+        if delay:
+            log(f"{configuration['name']}: pacing Gemini request for {delay:.1f}s")
+        log(f"{configuration['name']}: answer {position}/{len(dataset)} ({row['id']})")
+        started = time.perf_counter()
+        response = httpx.post(f"{base_url}/v1/evaluations/answer", json={
+            "question": row["question"],
+            "limit": configuration["limit"],
+            "neighbor_count": configuration["neighbor_count"],
+            "include_parent_context": configuration["include_parent_context"],
+            "collection": collection,
+        }, timeout=180)
+        response.raise_for_status()
+        result = response.json()
+        raw_rows.append({
+            "id": row["id"],
+            "question": row["question"],
+            "answerable": row["answerable"],
+            "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+            "answer": result["answer"],
+            "context": result["context"],
+            "evidence": result["evidence"],
+            "citations": [f"{item['source']}#{item['chunk_index']}" for item in result["evidence"]],
+        })
+    return {"collection": collection, "ingestion": ingestion.json(), "rows": raw_rows}
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--report", default=str(ROOT / "evals" / "golden-ragas-report.json"))
-    parser.add_argument("--port", type=int, default=8010)
+    parser.add_argument("--base-url", default="http://127.0.0.1:8000")
+    parser.add_argument("--checkpoint", default=str(ROOT / "evals" / "golden-ragas-checkpoint.json"))
+    parser.add_argument("--fresh", action="store_true", help="Discard the local checkpoint and start every configuration again.")
     args = parser.parse_args()
 
     manifest = load_json(ROOT / "evals" / "golden-ragas-manifest.json")
     dataset = load_json(ROOT / "evals" / "golden-ragas-dataset.json")
     validate_manifest(manifest)
     validate_dataset(dataset)
+    base_url = args.base_url.rstrip("/")
+    log(f"checking API at {base_url}")
+    wait_for_server(base_url)
     handbook = (ROOT / "scripts" / "rag_test_enterprise_platform_handbook.txt").read_text(encoding="utf-8")
     settings = Settings()
     api_key = settings.google_api_key.get_secret_value() if settings.google_api_key else None
@@ -122,15 +132,38 @@ def main() -> None:
         raise RuntimeError("The runtime RAGAS judge settings do not match the versioned manifest.")
     if settings.ragas_embedding_model != manifest["embedding"]["model"] or settings.ragas_embedding_revision != manifest["embedding"]["revision"]:
         raise RuntimeError("The runtime RAGAS embedding settings do not match the versioned manifest.")
+    if settings.ragas_requests_per_minute != manifest["rate_limit"]["requests_per_minute"] or settings.ragas_max_retry_delay_seconds != manifest["rate_limit"]["max_retry_delay_seconds"]:
+        raise RuntimeError("The runtime RAGAS rate-limit settings do not match the versioned manifest.")
 
-    judge = LangchainLLMWrapper(ChatGoogleGenerativeAI(model=settings.ragas_judge_model, temperature=settings.ragas_judge_temperature, api_key=api_key))
+    pacer = RequestPacer(settings.ragas_requests_per_minute)
+    judge_model = ChatGoogleGenerativeAI(model=settings.ragas_judge_model, temperature=settings.ragas_judge_temperature, api_key=api_key, max_retries=0)
+    judge = PacedLangchainLLMWrapper(judge_model, pacer, settings.ragas_max_retry_delay_seconds, log).as_ragas()
     embeddings = FastEmbedRagasEmbeddings(settings.ragas_embedding_model).as_ragas()
     answerable = [row for row in dataset if row["answerable"]]
     negatives = [row for row in dataset if not row["answerable"]]
+    checkpoint_path = Path(args.checkpoint)
+    if args.fresh and checkpoint_path.exists():
+        checkpoint_path.unlink()
+    checkpoint = load_checkpoint(checkpoint_path, manifest)
+    completed = {item["configuration"]["name"]: item for item in checkpoint["completed"]}
     experiment = []
-    for index, configuration in enumerate(manifest["configurations"]):
-        http_run = run_http_configuration(configuration, dataset, handbook, args.port + index, settings)
+    for configuration in manifest["configurations"]:
+        if configuration["name"] in completed:
+            log(f"{configuration['name']}: already complete in checkpoint; skipping")
+            experiment.append(completed[configuration["name"]])
+            continue
+        log(f"starting configuration {configuration['name']}")
+        pending = checkpoint.get("pending")
+        if pending and pending["configuration"]["name"] == configuration["name"]:
+            http_run = pending["http_run"]
+            log(f"{configuration['name']}: resuming from saved answers; skipping re-index and generation")
+        else:
+            http_run = run_http_configuration(configuration, dataset, handbook, base_url, settings, pacer)
+            checkpoint["pending"] = {"configuration": configuration, "http_run": http_run}
+            save_checkpoint(checkpoint_path, checkpoint)
+            log(f"{configuration['name']}: saved raw answers to checkpoint")
         answerable_results = [row for row in http_run["rows"] if row["answerable"]]
+        log(f"{configuration['name']}: scoring six answerable rows with RAGAS")
         scores = evaluate_answerable(answerable, answerable_results, judge, embeddings)
         for result, metric_scores in zip(answerable_results, scores):
             result["ragas"] = metric_scores
@@ -139,7 +172,12 @@ def main() -> None:
             result["abstention_passed"] = is_abstention(result["answer"])
         summary = aggregate(configuration["name"], scores, [row["latency_ms"] for row in answerable_results])
         summary["negative_abstention_rate"] = fmean(float(row["abstention_passed"]) for row in negative_results)
-        experiment.append({"configuration": configuration, "summary": summary, **http_run})
+        log(f"{configuration['name']}: mean={summary['mean']:.3f}, p95={summary['p95_latency_ms']:.2f}ms, abstention={summary['negative_abstention_rate']:.0%}")
+        completed_run = {"configuration": configuration, "summary": summary, **http_run}
+        experiment.append(completed_run)
+        checkpoint["completed"].append(completed_run)
+        checkpoint["pending"] = None
+        save_checkpoint(checkpoint_path, checkpoint)
 
     winner = select_winner([item["summary"] for item in experiment])
     report = {
@@ -150,10 +188,12 @@ def main() -> None:
         "configurations": experiment,
         "winner": winner,
         "winner_rule": "highest equal-weight RAGAS mean; when within 0.02, lower answerable p95 latency wins",
+        "checkpoint": str(checkpoint_path),
     }
     report_path = Path(args.report)
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    log(f"wrote report to {report_path}")
     print(json.dumps({"report": str(report_path), "winner": winner}, indent=2))
 
 

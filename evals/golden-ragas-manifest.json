@@ -1,12 +1,16 @@
 {
   "dataset_version": "1.0.0",
   "judge": {
-    "model": "gemini-2.5-flash-lite",
+    "model": "gemini-3.5-flash-lite",
     "temperature": 0
   },
   "embedding": {
     "model": "BAAI/bge-small-en-v1.5",
     "revision": "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
+  },
+  "rate_limit": {
+    "requests_per_minute": 12,
+    "max_retry_delay_seconds": 60
   },
   "metrics": [
     "context_precision",

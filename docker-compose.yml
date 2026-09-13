@@ -3,7 +3,7 @@ name: one-rag
 services:
   api:
     build: .
-    command: uv run uvicorn one_rag.api:app --host 0.0.0.0 --port 8000
+    command: uv run --frozen --no-sync uvicorn one_rag.api:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/src
     env_file: .env
     environment:
       POSTGRES_DSN: postgresql://${POSTGRES_USER:-one_rag}:${POSTGRES_PASSWORD:-one_rag_dev_password}@postgres:5432/${POSTGRES_DB:-one_rag}
@@ -11,6 +11,8 @@ services:
       QDRANT_URL: http://qdrant:6333
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
     ports: ["8000:8000"]
+    volumes:
+      - ./src:/app/src
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}

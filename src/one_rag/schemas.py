@@ -11,6 +11,11 @@ class DocumentUpdateIn(DocumentIn):
     pass
 
 
+class EvaluationDocumentIn(DocumentIn):
+    collection: str = Field(pattern=r"^golden_eval_[a-z0-9_]+$")
+    chunking_strategy: str = Field(min_length=1, max_length=100)
+
+
 class IngestedDocument(BaseModel):
     document_id: str
     source: str
@@ -24,8 +29,12 @@ class IngestedDocument(BaseModel):
 class QueryIn(BaseModel):
     question: str = Field(min_length=1, max_length=2_000)
     limit: int = Field(default=3, ge=1, le=10)
-    neighbor_count: int = Field(default=0, ge=0, le=3)
+    neighbor_count: int = Field(default=1, ge=0, le=3)
     include_parent_context: bool = True
+
+
+class EvaluationQueryIn(QueryIn):
+    collection: str = Field(pattern=r"^golden_eval_[a-z0-9_]+$")
 
 
 class Evidence(BaseModel):
