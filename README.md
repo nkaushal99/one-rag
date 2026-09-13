@@ -166,8 +166,16 @@ new logical document. It hashes normalized extracted text with SHA-256. The
 same content uploaded as a new document therefore keeps a distinct ID while
 reusing stored chunk vectors within the same `tenant_id`. A caller that intends
 to replace an existing document must use `PUT /v1/documents/{document_id}`;
-changed text receives a new version and old chunks become inactive, while an
+changed text receives a new version and obsolete chunks are replaced, while an
 unchanged upload is skipped. Filenames are source metadata, never identity.
+
+For the production `parent_child` strategy, PostgreSQL also stores the current
+hash and stable identity of every parent section. Updating one section reuses
+the unchanged sections' existing Qdrant vectors, embeds only the changed or new
+section children, and deletes removed sections. The response exposes
+`chunks_embedded`, `chunks_reused`, `chunks_deleted`, and equivalent section
+counts. This is latest-only storage: old section metadata and vectors are not
+kept after an update.
 
 ## What to inspect
 

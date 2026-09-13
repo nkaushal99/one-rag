@@ -24,6 +24,12 @@ class IngestedDocument(BaseModel):
     content_hash: str
     embedding_reused: bool
     unchanged: bool
+    chunks_embedded: int = 0
+    chunks_reused: int = 0
+    chunks_deleted: int = 0
+    sections_embedded: int = 0
+    sections_reused: int = 0
+    sections_deleted: int = 0
 
 
 class QueryIn(BaseModel):

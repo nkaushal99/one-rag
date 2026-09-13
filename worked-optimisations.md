@@ -1,29 +1,5 @@
 # Verified optimisations
 
-## OPT-004: Select retrieval context using a reproducible RAGAS baseline
-
-- Problem: retrieval alternatives were compared manually, without an answer
-  quality baseline or stable evaluator configuration.
-- Planned approach: run five isolated HTTP retrieval/context configurations on
-  a versioned synthetic handbook and six-answerable/two-negative golden set,
-  with fixed Gemini judging and pinned BGE evaluation embeddings.
-- Completion criteria: a retained local raw report, all five RAGAS metrics for
-  every answerable row, deterministic negative abstention checks, and a winner
-  selected by the documented score/latency rule.
-- Completed: 2026-09-13.
-- Implementation: added the versioned manifest and golden dataset, FastEmbed
-  RAGAS adapter, paced Gemini evaluator, evaluation endpoints, runner, and
-  ADR 006. The confirmed fixed judge is `gemini-3.5-flash-lite` at temperature
-  zero; the evaluator embedding remains the pinned BGE revision.
-- Verification evidence: `evals/golden-ragas-report.json` records all five
-  metrics for all 30 answerable configuration-row combinations and a 100 percent
-  abstention rate for all ten negative configuration-row combinations.
-- Before and after: before, manual evidence comparison only; after, five
-  isolated HTTP configurations have comparable RAGAS means. The selected
-  `parent_child_top3_neighbor_parent` configuration scored 0.778 mean with
-  1738.76 ms p95 latency, versus 0.158 for sentence-window top-1.
-- ADR: `adr/006-reproducible-ragas-evaluation.md`.
-
 ## OPT-001: Measure semantic chunk boundaries
 
 - Problem: sentence-only indexing could separate adjacent answer facts, and the
@@ -71,3 +47,46 @@
   ingestion semantics, vector copying, version payloads, and active filtering.
 - Verification evidence: retrieval tests cover reuse and version replacement.
 - ADR: `adr/005-document-identity-and-deduplication.md`.
+
+## OPT-004: Select retrieval context using a reproducible RAGAS baseline
+
+- Problem: retrieval alternatives were compared manually, without an answer
+  quality baseline or stable evaluator configuration.
+- Planned approach: run five isolated HTTP retrieval/context configurations on
+  a versioned synthetic handbook and six-answerable/two-negative golden set,
+  with fixed Gemini judging and pinned BGE evaluation embeddings.
+- Completion criteria: a retained local raw report, all five RAGAS metrics for
+  every answerable row, deterministic negative abstention checks, and a winner
+  selected by the documented score/latency rule.
+- Completed: 2026-09-13.
+- Implementation: added the versioned manifest and golden dataset, FastEmbed
+  RAGAS adapter, paced Gemini evaluator, evaluation endpoints, runner, and
+  ADR 006. The confirmed fixed judge is `gemini-3.5-flash-lite` at temperature
+  zero; the evaluator embedding remains the pinned BGE revision.
+- Verification evidence: `evals/golden-ragas-report.json` records all five
+  metrics for all 30 answerable configuration-row combinations and a 100 percent
+  abstention rate for all ten negative configuration-row combinations.
+- Before and after: before, manual evidence comparison only; after, five
+  isolated HTTP configurations have comparable RAGAS means. The selected
+  `parent_child_top3_neighbor_parent` configuration scored 0.778 mean with
+  1738.76 ms p95 latency, versus 0.158 for sentence-window top-1.
+- ADR: `adr/006-reproducible-ragas-evaluation.md`.
+
+## OPT-005: Reuse unchanged parent sections during updates
+
+- Problem: any partial edit re-embedded every chunk in the document.
+- Planned approach: persist current document and parent-section hashes in
+  PostgreSQL, reuse vectors for unchanged parent sections, and embed only
+  added or changed sections.
+- Completion criteria: verified PostgreSQL metadata, observable reuse counts,
+  and an update test that re-embeds only the changed parent section.
+- Completed: 2026-09-13.
+- Implementation: added `rag_documents` and `rag_document_sections`, stable
+  parent-section UUIDs/hashes in Qdrant payloads, latest-only section removal,
+  legacy metadata bootstrap, and inspection counters in ingest/update results.
+- Verification evidence: unit tests cover change, insertion, removal, and
+  duplicate-section matching. A live PostgreSQL/Qdrant update reused two Alpha
+  child vectors and embedded only two changed Beta child vectors.
+- Before and after: before, a single section edit embedded four children; after,
+  the same two-section document embedded two and reused two.
+- ADR: `adr/007-parent-section-hash-updates.md`.

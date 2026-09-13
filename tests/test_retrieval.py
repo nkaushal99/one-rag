@@ -3,6 +3,7 @@ from unittest import TestCase
 from qdrant_client import QdrantClient
 
 from one_rag.retrieval import RetrievalService
+from one_rag.metadata import InMemoryMetadataRepository
 from one_rag.settings import Settings
 
 
@@ -19,6 +20,7 @@ class RetrievalTests(TestCase):
         service.settings = Settings(qdrant_url=":memory:", collection="test_documents", chunking_strategy=strategy)
         service.client = QdrantClient(":memory:")
         service.embedder = DeterministicEmbedder()
+        service.metadata = InMemoryMetadataRepository()
         return service
 
     def test_ingest_and_query_returns_cosine_ranked_evidence(self) -> None:
@@ -62,3 +64,49 @@ class RetrievalTests(TestCase):
         self.assertFalse(updated["embedding_reused"])
         self.assertNotIn("Credentials", str(service.search("credential", limit=1)[0]["text"]))
         self.assertEqual(service.search("holiday", limit=1)[0]["version"], 2)
+
+    def test_parent_child_update_reuses_unchanged_section_vectors(self) -> None:
+        service = self.service("parent_child")
+        created = service.create_document("guide.txt", "# Alpha\nAlpha credential detail. More alpha detail.\n\n# Beta\nBeta holiday detail. More beta detail.")
+        before = service._document_records(str(created["document_id"]), "local", with_vectors=False)
+        alpha_ids = {str(record.id) for record in before if record.payload["parent_chunk_index"] == 0}
+
+        updated = service.update_document(str(created["document_id"]), "guide.txt", "# Alpha\nAlpha credential detail. More alpha detail.\n\n# Beta\nBeta changed holiday detail. More beta detail.")
+        after = service._document_records(str(created["document_id"]), "local", with_vectors=False)
+
+        self.assertEqual(updated["chunks_reused"], 2)
+        self.assertEqual(updated["chunks_embedded"], 2)
+        self.assertEqual(updated["sections_reused"], 1)
+        self.assertEqual(alpha_ids, {str(record.id) for record in after if record.payload["parent_chunk_index"] == 0})
+
+    def test_inserted_section_preserves_later_section_identity(self) -> None:
+        service = self.service("parent_child")
+        created = service.create_document("guide.txt", "# Alpha\nAlpha credential detail. More alpha detail.\n\n# Beta\nBeta holiday detail. More beta detail.")
+        before = service._document_records(str(created["document_id"]), "local", with_vectors=False)
+        beta_id = next(record.payload["parent_section_id"] for record in before if record.payload["parent_chunk_index"] == 1)
+
+        updated = service.update_document(str(created["document_id"]), "guide.txt", "# New\nNew detail. More new detail.\n\n# Alpha\nAlpha credential detail. More alpha detail.\n\n# Beta\nBeta holiday detail. More beta detail.")
+        after = service._document_records(str(created["document_id"]), "local", with_vectors=False)
+
+        self.assertEqual(updated["sections_reused"], 2)
+        self.assertEqual(beta_id, next(record.payload["parent_section_id"] for record in after if record.payload["parent_chunk_index"] == 2))
+
+    def test_removed_section_deletes_only_its_children(self) -> None:
+        service = self.service("parent_child")
+        created = service.create_document("guide.txt", "# Alpha\nAlpha credential detail. More alpha detail.\n\n# Beta\nBeta holiday detail. More beta detail.")
+
+        updated = service.update_document(str(created["document_id"]), "guide.txt", "# Alpha\nAlpha credential detail. More alpha detail.")
+        records = service._document_records(str(created["document_id"]), "local", with_vectors=False)
+
+        self.assertEqual(updated["chunks_reused"], 2)
+        self.assertEqual(updated["chunks_deleted"], 2)
+        self.assertEqual(updated["sections_deleted"], 1)
+        self.assertEqual(len(records), 2)
+
+    def test_duplicate_section_hashes_reuse_in_order(self) -> None:
+        service = self.service("parent_child")
+        sections = service._sections("# Same\nRepeated detail. More detail.\n\n# Same\nRepeated detail. More detail.")
+        existing = service._section_rows(sections)
+        updated = service._sections("# New\nNew detail. More detail.\n\n# Same\nRepeated detail. More detail.\n\n# Same\nRepeated detail. More detail.", existing)
+
+        self.assertEqual([section["section_id"] for section in updated[1:]], [section.section_id for section in existing])
