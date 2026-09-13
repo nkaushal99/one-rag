@@ -47,11 +47,34 @@ returns fused evidence with dense/sparse scores and ranks, a retrieval reason,
 and a context string. `score` is the RRF score, not a cosine similarity. Both
 are available in the running API's `/docs`.
 
+## Stage 8: opt-in cross-encoder reranking
+
+Hybrid retrieval maximizes recall; optional FlashRank CPU ONNX reranking then
+optimizes the order of a fused candidate pool for precision. Send
+`rerank_candidate_limit` as `10`, `30`, or `50` with `/v1/query` or
+`/v1/answer`; omit it to retain the current hybrid-only default. `limit` still
+controls how many primary chunks are returned. Evidence preserves its RRF,
+dense, and sparse trace and additionally reports pre-rerank and cross-encoder
+ranks/scores. The response trace reports fused candidate count and separate
+retrieval/reranking latency.
+
+The versioned RAGAS experiment compares hybrid top-5 with top-10-to-5,
+top-30-to-5, and top-50-to-8 reranking. Run it with:
+
+```bash
+uv run --extra retrieval scripts/evaluate_ragas.py --fresh
+```
+
+It needs `GOOGLE_API_KEY` in `.env`, downloads FlashRank's
+`ms-marco-MiniLM-L-12-v2` model on first use, and records quality plus
+end-to-end/retrieval/reranking p95 latencies in its ignored local report.
+
 Example:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/v1/documents -H "Content-Type: application/json" -d '{"source":"account-guide.txt","text":"Credentials can be modified from Account Settings."}'
 curl -X POST http://127.0.0.1:8000/v1/query -H "Content-Type: application/json" -d '{"question":"How can I reset my password?"}'
+curl -X POST http://127.0.0.1:8000/v1/query -H "Content-Type: application/json" -d '{"question":"How can I reset my password?","limit":5,"rerank_candidate_limit":30}'
 curl -X POST http://127.0.0.1:8000/v1/answer -H "Content-Type: application/json" -d '{"question":"How can I reset my password?"}'
 ```
 
@@ -146,7 +169,7 @@ unanswerable handbook questions. `evals/golden-ragas-manifest.json` fixes the
 judge to `gemini-3.5-flash-lite` at temperature zero and the semantic evaluator
 to FastEmbed `BAAI/bge-small-en-v1.5` at its recorded immutable revision.
 
-With Qdrant running and `GOOGLE_API_KEY` in `.env`, run all five isolated HTTP
+With Qdrant, OpenSearch, and `GOOGLE_API_KEY` in `.env`, run all four isolated HTTP
 configurations against the already-running API on port 8000:
 
 ```bash
@@ -168,7 +191,8 @@ discard that checkpoint intentionally.
 It creates `golden_eval_*` Qdrant collections and writes the ignored local
 `evals/golden-ragas-report.json`. The report includes raw answers, contexts,
 evidence, citations, per-row RAGAS metrics, evaluator/package versions,
-latency, aggregates, abstention results, and the winner. The winner is the
+end-to-end plus retrieval/reranking latency, aggregates, abstention results,
+and the winner. The winner is the
 highest equal-weight mean of Context Precision, Context Recall, Faithfulness,
 Answer Accuracy, and Answer Relevancy; scores within 0.02 use lower p95 answer
 latency as the tie-breaker. Read the raw evidence alongside the scores.

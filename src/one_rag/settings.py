@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     ragas_embedding_revision: str = "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
     ragas_requests_per_minute: int = 12
     ragas_max_retry_delay_seconds: int = 60
-    reranker_model: str = ""
+    reranker_model: str = "ms-marco-MiniLM-L-12-v2"
     chunking_strategy: str = "parent_child"
     fixed_chunk_size: int = 500
     fixed_chunk_overlap: int = 100

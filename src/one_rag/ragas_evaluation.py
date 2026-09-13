@@ -114,8 +114,11 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
     if list(manifest["metrics"]) != list(RAGAS_METRICS):
         raise ValueError("The RAGAS metric order must match the fixed baseline.")
     names = [configuration["name"] for configuration in manifest["configurations"]]
-    if len(names) != 5 or len(names) != len(set(names)):
-        raise ValueError("The manifest must define five uniquely named configurations.")
+    if len(names) != 4 or len(names) != len(set(names)):
+        raise ValueError("The manifest must define four uniquely named reranking configurations.")
+    expected = {"hybrid_top5": None, "hybrid_top10_rerank5": 10, "hybrid_top30_rerank5": 30, "hybrid_top50_rerank8": 50}
+    if {configuration["name"]: configuration.get("rerank_candidate_limit") for configuration in manifest["configurations"]} != expected:
+        raise ValueError("The manifest must compare the fixed hybrid reranking configurations.")
 
 
 def validate_dataset(dataset: list[dict[str, Any]]) -> None:
@@ -214,6 +217,12 @@ def aggregate(configuration: str, rows: list[dict[str, float]], latencies_ms: li
     ordered = sorted(latencies_ms)
     index = max(0, min(len(ordered) - 1, int((len(ordered) - 1) * 0.95)))
     return {"configuration": configuration, **values, "mean": fmean(values.values()), "p95_latency_ms": ordered[index]}
+
+
+def p95_latency_ms(latencies_ms: list[float]) -> float:
+    ordered = sorted(latencies_ms)
+    index = max(0, min(len(ordered) - 1, int((len(ordered) - 1) * 0.95)))
+    return ordered[index]
 
 
 def select_winner(aggregates: list[dict[str, float | str]]) -> dict[str, float | str]:

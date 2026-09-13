@@ -1,6 +1,7 @@
 from collections import defaultdict, deque
 from functools import lru_cache
 from hashlib import sha256
+from time import perf_counter
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from fastembed import TextEmbedding
@@ -10,6 +11,7 @@ from qdrant_client.models import Distance, FieldCondition, Filter, MatchValue, P
 from one_rag.chunking import chunk_text, section_chunks, sentence_window_chunks
 from one_rag.metadata import DocumentMetadata, PostgresMetadataRepository, SectionMetadata
 from one_rag.settings import Settings, get_settings
+from one_rag.reranking import FlashRankReranker
 from one_rag.sparse import OpenSearchSparseIndex
 
 
@@ -27,6 +29,8 @@ class RetrievalService:
         self.embedder = get_embedder(self.settings.embedding_model)
         self.metadata = PostgresMetadataRepository(self.settings.postgres_dsn)
         self.sparse = OpenSearchSparseIndex(self.settings)
+        self.reranker = FlashRankReranker(self.settings.reranker_model)
+        self.last_trace: dict[str, float | int] = {"fused_candidate_count": 0, "rerank_candidate_count": 0, "retrieval_latency_ms": 0, "rerank_latency_ms": 0}
 
     @staticmethod
     def content_hash(text: str) -> str:
@@ -91,8 +95,8 @@ class RetrievalService:
     def _sync_sparse_document(self, document_id: str, tenant_id: str) -> None:
         self.sparse.replace_document(tenant_id, document_id, self._document_records(document_id, tenant_id))
 
-    def _result(self, point_id: str, payload: dict[str, object], retrieval_reason: str, score: float, include_parent_context: bool, dense_score: float | None = None, sparse_score: float | None = None, dense_rank: int | None = None, sparse_rank: int | None = None, anchor_chunk_index: int | None = None) -> dict[str, object]:
-        return {"_point_id": point_id, "document_id": payload["document_id"], "source": payload["source"], "version": payload.get("version", 1), "chunk_index": payload["chunk_index"], "text": payload["text"], "score": score, "dense_score": dense_score, "sparse_score": sparse_score, "dense_rank": dense_rank, "sparse_rank": sparse_rank, "parent_chunk_index": payload.get("parent_chunk_index"), "child_chunk_index": payload.get("child_chunk_index"), "retrieval_reason": retrieval_reason, "anchor_chunk_index": anchor_chunk_index, "parent_text": payload.get("parent_text") if include_parent_context else None}
+    def _result(self, point_id: str, payload: dict[str, object], retrieval_reason: str, score: float, include_parent_context: bool, dense_score: float | None = None, sparse_score: float | None = None, dense_rank: int | None = None, sparse_rank: int | None = None, anchor_chunk_index: int | None = None, pre_rerank_rank: int | None = None, reranker_score: float | None = None, rerank_rank: int | None = None) -> dict[str, object]:
+        return {"_point_id": point_id, "document_id": payload["document_id"], "source": payload["source"], "version": payload.get("version", 1), "chunk_index": payload["chunk_index"], "text": payload["text"], "score": score, "dense_score": dense_score, "sparse_score": sparse_score, "dense_rank": dense_rank, "sparse_rank": sparse_rank, "pre_rerank_score": score if pre_rerank_rank else None, "pre_rerank_rank": pre_rerank_rank, "reranker_score": reranker_score, "rerank_rank": rerank_rank, "parent_chunk_index": payload.get("parent_chunk_index"), "child_chunk_index": payload.get("child_chunk_index"), "retrieval_reason": retrieval_reason, "anchor_chunk_index": anchor_chunk_index, "parent_text": payload.get("parent_text") if include_parent_context else None}
 
     def ingest(self, document_id: str, source: str, text: str) -> int:
         if self.client.collection_exists(self.settings.collection):
@@ -182,10 +186,12 @@ class RetrievalService:
         self._sync_sparse_document(document_id, tenant_id)
         return self._outcome(document_id, source, count, new_version, content_hash, False, count - reused_count, reused_count, len(set(delete_ids)), len(new_ids - old_ids), len(reusable), len(changed_ids))
 
-    def search(self, question: str, limit: int, neighbor_count: int = 1, include_parent_context: bool = True, tenant_id: str = "local") -> list[dict[str, object]]:
+    def search(self, question: str, limit: int, neighbor_count: int = 1, include_parent_context: bool = True, tenant_id: str = "local", rerank_candidate_limit: int | None = None) -> list[dict[str, object]]:
+        started = perf_counter()
         if not self.client.collection_exists(self.settings.collection):
+            self.last_trace = {"fused_candidate_count": 0, "rerank_candidate_count": 0, "retrieval_latency_ms": 0, "rerank_latency_ms": 0}
             return []
-        candidate_limit = self.settings.hybrid_candidate_limit
+        candidate_limit = max(self.settings.hybrid_candidate_limit, rerank_candidate_limit or 0)
         points = self.client.query_points(collection_name=self.settings.collection, query=self._vectors([question])[0], query_filter=Filter(must=[FieldCondition(key="is_active", match=MatchValue(value=True)), FieldCondition(key="tenant_id", match=MatchValue(value=tenant_id))]), limit=candidate_limit).points
         sparse_hits = self.sparse.search(question, tenant_id, candidate_limit)
         candidates: dict[str, dict[str, object]] = {}
@@ -204,7 +210,22 @@ class RetrievalService:
             reason = "dense+sparse" if dense_rank and sparse_rank else "dense" if dense_rank else "sparse"
             ranked.append((score, point_id, candidate, reason))
         ranked.sort(key=lambda item: item[0], reverse=True)
-        results = [self._result(point_id, candidate["payload"], reason, score, include_parent_context, candidate["dense_score"], candidate["sparse_score"], candidate["dense_rank"], candidate["sparse_rank"]) for score, point_id, candidate, reason in ranked[:limit]]
+        fused_latency_ms = round((perf_counter() - started) * 1000, 2)
+        results = [self._result(point_id, candidate["payload"], reason, score, include_parent_context, candidate["dense_score"], candidate["sparse_score"], candidate["dense_rank"], candidate["sparse_rank"], pre_rerank_rank=rank) for rank, (score, point_id, candidate, reason) in enumerate(ranked, start=1)]
+        rerank_latency_ms = 0.0
+        rerank_count = 0
+        if rerank_candidate_limit:
+            pool = results[:rerank_candidate_limit]
+            rerank_count = len(pool)
+            rerank_started = perf_counter()
+            scores = self.reranker.score(question, pool)
+            rerank_latency_ms = round((perf_counter() - rerank_started) * 1000, 2)
+            results = sorted(pool, key=lambda item: (-scores[str(item["_point_id"])], int(item["pre_rerank_rank"])))
+            for rank, item in enumerate(results, start=1):
+                item["reranker_score"] = scores[str(item["_point_id"])]
+                item["rerank_rank"] = rank
+        results = results[:limit]
+        self.last_trace = {"fused_candidate_count": len(ranked), "rerank_candidate_count": rerank_count, "retrieval_latency_ms": fused_latency_ms, "rerank_latency_ms": rerank_latency_ms}
         if neighbor_count < 1:
             return results
         records, selected = self._all_records(), {(item["document_id"], item["chunk_index"]) for item in results}
@@ -215,7 +236,7 @@ class RetrievalService:
             for record in siblings:
                 distance, key = abs(int(record.payload["child_chunk_index"]) - int(payload["child_chunk_index"])), (record.payload["document_id"], record.payload["chunk_index"])
                 if 0 < distance <= neighbor_count and key not in selected:
-                    results.append(self._result(str(record.id), dict(record.payload), "neighbor", float(match["score"]), include_parent_context, match["dense_score"], match["sparse_score"], match["dense_rank"], match["sparse_rank"], int(match["chunk_index"]))); selected.add(key)
+                    results.append(self._result(str(record.id), dict(record.payload), "neighbor", float(match["score"]), include_parent_context, match["dense_score"], match["sparse_score"], match["dense_rank"], match["sparse_rank"], int(match["chunk_index"]), match["pre_rerank_rank"], match["reranker_score"], match["rerank_rank"])); selected.add(key)
         return results
 
     def reindex_existing_collection(self) -> int:

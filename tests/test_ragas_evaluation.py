@@ -1,16 +1,21 @@
 import unittest
 
-from one_rag.ragas_evaluation import FastEmbedRagasEmbeddings, aggregate, is_abstention, is_rate_limited, map_metric_scores, retry_delay_seconds, select_winner, validate_dataset, validate_manifest
+from one_rag.ragas_evaluation import FastEmbedRagasEmbeddings, aggregate, is_abstention, is_rate_limited, map_metric_scores, p95_latency_ms, retry_delay_seconds, select_winner, validate_dataset, validate_manifest
 
 
 def manifest():
     return {
-        "dataset_version": "1.0.0",
+        "dataset_version": "2.0.0",
         "judge": {"model": "gemini-3.5-flash-lite", "temperature": 0},
         "embedding": {"model": "BAAI/bge-small-en-v1.5", "revision": "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"},
         "rate_limit": {"requests_per_minute": 12, "max_retry_delay_seconds": 60},
         "metrics": ["context_precision", "context_recall", "faithfulness", "answer_correctness", "answer_relevancy"],
-        "configurations": [{"name": f"config-{index}"} for index in range(5)],
+        "configurations": [
+            {"name": "hybrid_top5", "rerank_candidate_limit": None},
+            {"name": "hybrid_top10_rerank5", "rerank_candidate_limit": 10},
+            {"name": "hybrid_top30_rerank5", "rerank_candidate_limit": 30},
+            {"name": "hybrid_top50_rerank8", "rerank_candidate_limit": 50},
+        ],
     }
 
 
@@ -45,6 +50,7 @@ class RagasEvaluationTests(unittest.TestCase):
         slow = aggregate("slow", [{key: value + 0.01 for key, value in scores[0].items()}], [80, 90, 100])
         self.assertEqual(fast["context_precision"], 1.0)
         self.assertEqual(select_winner([slow, fast])["configuration"], "fast")
+        self.assertEqual(p95_latency_ms([30, 40, 50]), 40)
 
     def test_metric_mapping_rejects_incomplete_ragas_scores(self):
         score = {"context_precision": 1, "context_recall": 1, "faithfulness": 1, "answer_correctness": 1, "answer_relevancy": 1}

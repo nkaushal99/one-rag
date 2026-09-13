@@ -96,6 +96,29 @@
             "url": "{{baseUrl}}/v1/query"
           },
           "response": []
+        },
+        {
+          "name": "Query with FlashRank reranking",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"question\": \"payment retries generating duplicates\",\n  \"limit\": 5,\n  \"rerank_candidate_limit\": 30\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/query"
+          },
+          "response": []
         }
       ]
     }

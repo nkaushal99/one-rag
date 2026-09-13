@@ -19,10 +19,10 @@ class AnswerService:
         api_key = self.settings.google_api_key.get_secret_value() if self.settings.google_api_key else None
         self.model = ChatGoogleGenerativeAI(model=self.settings.llm_model or "gemini-3.5-flash-lite", temperature=self.settings.llm_temperature, api_key=api_key)
 
-    def answer(self, question: str, limit: int, neighbor_count: int, include_parent_context: bool, tenant_id: str = "local") -> dict[str, object]:
-        evidence = self.retrieval.search(question, limit, neighbor_count, include_parent_context, tenant_id)
+    def answer(self, question: str, limit: int, neighbor_count: int, include_parent_context: bool, tenant_id: str = "local", rerank_candidate_limit: int | None = None) -> dict[str, object]:
+        evidence = self.retrieval.search(question, limit, neighbor_count, include_parent_context, tenant_id, rerank_candidate_limit)
         if not evidence:
-            return {"answer": "I do not have retrieved evidence to answer that question.", "context": "", "evidence": []}
+            return {"answer": "I do not have retrieved evidence to answer that question.", "context": "", "evidence": [], "trace": self.retrieval.last_trace}
         context = build_context(evidence)
         prompt = ChatPromptTemplate.from_messages([
             ("system", "Answer only from the supplied context. If the context does not answer the question, respond with exactly: I do not know based on the provided context. Cite each factual claim with its bracketed source and chunk label. Do not invent details."),
@@ -32,4 +32,4 @@ class AnswerService:
             answer = (prompt | self.model | StrOutputParser()).invoke({"question": question, "context": context})
         except Exception as error:
             raise RuntimeError("Gemini could not generate an answer with the configured model.") from error
-        return {"answer": answer, "context": context, "evidence": evidence}
+        return {"answer": answer, "context": context, "evidence": evidence, "trace": self.retrieval.last_trace}

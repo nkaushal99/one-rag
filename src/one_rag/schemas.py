@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -38,6 +40,7 @@ class QueryIn(BaseModel):
     limit: int = Field(default=6, ge=1, le=10)
     neighbor_count: int = Field(default=1, ge=0, le=3)
     include_parent_context: bool = True
+    rerank_candidate_limit: Literal[10, 30, 50] | None = None
 
 
 class EvaluationQueryIn(QueryIn):
@@ -54,6 +57,10 @@ class Evidence(BaseModel):
     sparse_score: float | None = None
     dense_rank: int | None = None
     sparse_rank: int | None = None
+    pre_rerank_score: float | None = None
+    pre_rerank_rank: int | None = None
+    reranker_score: float | None = None
+    rerank_rank: int | None = None
     parent_chunk_index: int | None = None
     child_chunk_index: int | None = None
     retrieval_reason: str = "match"
@@ -61,10 +68,18 @@ class Evidence(BaseModel):
     parent_text: str | None = None
 
 
+class RetrievalTrace(BaseModel):
+    fused_candidate_count: int = 0
+    rerank_candidate_count: int = 0
+    retrieval_latency_ms: float = 0
+    rerank_latency_ms: float = 0
+
+
 class QueryResult(BaseModel):
     question: str
     context: str
     evidence: list[Evidence]
+    trace: RetrievalTrace = Field(default_factory=RetrievalTrace)
 
 
 class AnswerResult(QueryResult):

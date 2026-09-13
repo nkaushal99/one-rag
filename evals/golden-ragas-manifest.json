@@ -1,5 +1,5 @@
 {
-  "dataset_version": "1.0.0",
+  "dataset_version": "2.0.0",
   "judge": {
     "model": "gemini-3.5-flash-lite",
     "temperature": 0
@@ -20,10 +20,9 @@
     "answer_relevancy"
   ],
   "configurations": [
-    {"name": "sentence_window_top1", "chunking_strategy": "sentence_window", "limit": 1, "neighbor_count": 0, "include_parent_context": false},
-    {"name": "parent_child_top1", "chunking_strategy": "parent_child", "limit": 1, "neighbor_count": 0, "include_parent_context": false},
-    {"name": "parent_child_neighbor_child", "chunking_strategy": "parent_child", "limit": 1, "neighbor_count": 1, "include_parent_context": false},
-    {"name": "parent_child_neighbor_parent", "chunking_strategy": "parent_child", "limit": 1, "neighbor_count": 1, "include_parent_context": true},
-    {"name": "parent_child_top3_neighbor_parent", "chunking_strategy": "parent_child", "limit": 3, "neighbor_count": 1, "include_parent_context": true}
+    {"name": "hybrid_top5", "chunking_strategy": "parent_child", "limit": 5, "neighbor_count": 1, "include_parent_context": true, "rerank_candidate_limit": null},
+    {"name": "hybrid_top10_rerank5", "chunking_strategy": "parent_child", "limit": 5, "neighbor_count": 1, "include_parent_context": true, "rerank_candidate_limit": 10},
+    {"name": "hybrid_top30_rerank5", "chunking_strategy": "parent_child", "limit": 5, "neighbor_count": 1, "include_parent_context": true, "rerank_candidate_limit": 30},
+    {"name": "hybrid_top50_rerank8", "chunking_strategy": "parent_child", "limit": 8, "neighbor_count": 1, "include_parent_context": true, "rerank_candidate_limit": 50}
   ]
 }

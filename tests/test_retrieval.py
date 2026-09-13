@@ -23,6 +23,16 @@ class FakeSparseIndex:
         return len(records)
 
 
+class FakeReranker:
+    def __init__(self, scores: dict[str, float] | None = None) -> None:
+        self.scores = scores or {}
+        self.last_candidates: list[dict[str, object]] = []
+
+    def score(self, question: str, candidates: list[dict[str, object]]) -> dict[str, float]:
+        self.last_candidates = candidates
+        return {str(candidate["_point_id"]): self.scores.get(str(candidate["_point_id"]), 0.0) for candidate in candidates}
+
+
 class DeterministicEmbedder:
     def embed(self, texts: list[str]):
         for text in texts:
@@ -38,6 +48,8 @@ class RetrievalTests(TestCase):
         service.embedder = DeterministicEmbedder()
         service.metadata = InMemoryMetadataRepository()
         service.sparse = FakeSparseIndex()
+        service.reranker = FakeReranker()
+        service.last_trace = {}
         return service
 
     def test_ingest_and_query_returns_cosine_ranked_evidence(self) -> None:
@@ -97,6 +109,41 @@ class RetrievalTests(TestCase):
         results = service.search("credential", limit=3, neighbor_count=0, tenant_id="local")
 
         self.assertEqual([result["source"] for result in results], ["local.txt"])
+
+    def test_reranker_reorders_a_fused_candidate_pool_and_records_trace(self) -> None:
+        service = self.service()
+        service.ingest("guide", "guide.txt", "Credential instructions. Holidays are listed elsewhere. Credential recovery needs a one-time code.")
+        target = next(record for record in service._all_records() if "one-time" in str(record.payload["text"]))
+        service.reranker = FakeReranker({str(target.id): 0.99})
+
+        results = service.search("credential", limit=2, neighbor_count=0, rerank_candidate_limit=10)
+
+        self.assertIn("one-time", str(results[0]["text"]))
+        self.assertEqual(results[0]["rerank_rank"], 1)
+        self.assertIsNotNone(results[0]["pre_rerank_rank"])
+        self.assertEqual(service.last_trace["rerank_candidate_count"], 3)
+
+    def test_reranker_ties_keep_the_fused_order(self) -> None:
+        service = self.service()
+        service.ingest("guide", "guide.txt", "Credential instructions. Holidays are listed elsewhere.")
+        baseline = service.search("credential", limit=2, neighbor_count=0)
+        service.reranker = FakeReranker()
+
+        reranked = service.search("credential", limit=2, neighbor_count=0, rerank_candidate_limit=10)
+
+        self.assertEqual([item["chunk_index"] for item in reranked], [item["chunk_index"] for item in baseline])
+
+    def test_neighbor_expansion_uses_the_reranked_primary_match(self) -> None:
+        service = self.service("parent_child")
+        service.ingest("guide", "guide.txt", "# Alpha\nCredential detail. Target recovery detail.\n\n# Beta\nHoliday detail. More holiday detail.")
+        target = next(record for record in service._all_records() if "Target" in str(record.payload["text"]))
+        service.reranker = FakeReranker({str(target.id): 1.0})
+
+        results = service.search("credential", limit=1, neighbor_count=1, rerank_candidate_limit=10)
+
+        self.assertIn("Target", str(results[0]["text"]))
+        self.assertEqual(results[0]["rerank_rank"], 1)
+        self.assertEqual(results[1]["anchor_chunk_index"], results[0]["chunk_index"])
 
     def test_parent_child_search_returns_a_neighbor_from_the_same_parent(self) -> None:
         service = self.service("parent_child")

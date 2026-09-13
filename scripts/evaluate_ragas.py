@@ -1,4 +1,4 @@
-"""Run the five golden RAGAS configurations through the public HTTP API."""
+"""Run hybrid-only and FlashRank reranking configurations through the HTTP API."""
 
 import argparse
 import json
@@ -18,6 +18,7 @@ from one_rag.ragas_evaluation import (
     evaluate_answerable,
     is_abstention,
     package_versions,
+    p95_latency_ms,
     select_winner,
     validate_dataset,
     validate_manifest,
@@ -91,6 +92,7 @@ def run_http_configuration(configuration: dict, dataset: list[dict], handbook: s
             "limit": configuration["limit"],
             "neighbor_count": configuration["neighbor_count"],
             "include_parent_context": configuration["include_parent_context"],
+            "rerank_candidate_limit": configuration["rerank_candidate_limit"],
             "collection": collection,
         }, timeout=180)
         response.raise_for_status()
@@ -104,6 +106,8 @@ def run_http_configuration(configuration: dict, dataset: list[dict], handbook: s
             "context": result["context"],
             "evidence": result["evidence"],
             "citations": [f"{item['source']}#{item['chunk_index']}" for item in result["evidence"]],
+            "retrieval_latency_ms": result["trace"]["retrieval_latency_ms"],
+            "rerank_latency_ms": result["trace"]["rerank_latency_ms"],
         })
     return {"collection": collection, "ingestion": ingestion.json(), "rows": raw_rows}
 
@@ -171,6 +175,8 @@ def main() -> None:
         for result in negative_results:
             result["abstention_passed"] = is_abstention(result["answer"])
         summary = aggregate(configuration["name"], scores, [row["latency_ms"] for row in answerable_results])
+        summary["retrieval_p95_latency_ms"] = p95_latency_ms([row["retrieval_latency_ms"] for row in answerable_results])
+        summary["rerank_p95_latency_ms"] = p95_latency_ms([row["rerank_latency_ms"] for row in answerable_results])
         summary["negative_abstention_rate"] = fmean(float(row["abstention_passed"]) for row in negative_results)
         log(f"{configuration['name']}: mean={summary['mean']:.3f}, p95={summary['p95_latency_ms']:.2f}ms, abstention={summary['negative_abstention_rate']:.0%}")
         completed_run = {"configuration": configuration, "summary": summary, **http_run}
