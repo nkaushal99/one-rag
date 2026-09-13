@@ -34,7 +34,8 @@ class IngestedDocument(BaseModel):
 
 class QueryIn(BaseModel):
     question: str = Field(min_length=1, max_length=2_000)
-    limit: int = Field(default=3, ge=1, le=10)
+    tenant_id: str = Field(default="local", min_length=1, max_length=200)
+    limit: int = Field(default=6, ge=1, le=10)
     neighbor_count: int = Field(default=1, ge=0, le=3)
     include_parent_context: bool = True
 
@@ -49,9 +50,14 @@ class Evidence(BaseModel):
     chunk_index: int
     text: str
     score: float
+    dense_score: float | None = None
+    sparse_score: float | None = None
+    dense_rank: int | None = None
+    sparse_rank: int | None = None
     parent_chunk_index: int | None = None
     child_chunk_index: int | None = None
     retrieval_reason: str = "match"
+    anchor_chunk_index: int | None = None
     parent_text: str | None = None
 
 

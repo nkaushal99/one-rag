@@ -10,11 +10,12 @@ a transparent retrieval API. LangChain is used only for the Gemini answer step.
 - FastAPI at `http://localhost:8000` (interactive docs: `/docs`)
 - PostgreSQL at `localhost:5432` for future document/job metadata
 - Qdrant at `localhost:6333` for vectors
+- OpenSearch at `localhost:9200` for BM25 keyword retrieval
 - Redis at `localhost:6379` for future cache/short-lived job state
 - Redpanda at `localhost:19092`, a Kafka-compatible broker for future ingestion jobs
 
 Verify the stack with `curl http://localhost:8000/health/ready`. It checks all
-four dependencies and returns HTTP 503 until they are reachable. Data volumes are
+five dependencies and returns HTTP 503 until they are reachable. Data volumes are
 named and persist across container restarts. `docker compose down` stops services;
 add `-v` only when you intentionally want to delete local data.
 
@@ -26,18 +27,25 @@ host-facing `QDRANT_URL` from `.env` (normally `http://localhost:6333`). Set
 ## Stage 1: transparent retrieval
 
 Plain-text documents are sentence-chunked, embedded with an open-source model,
-stored in Qdrant, and retrieved by cosine similarity. The API returns the
-retrieved evidence and the exact constructed context. `POST /v1/answer` passes
-that visible context to Gemini through LangChain and returns a cited answer.
+stored in Qdrant, and indexed into OpenSearch. Each query fuses Qdrant cosine
+and OpenSearch BM25 rankings with reciprocal-rank fusion (RRF), so conceptual
+queries use dense retrieval while exact terms such as `INC-48291`,
+`NullPointerException`, `PAYMENT_RETRY_V2`, `HTTP 429`, and `customer_id` use
+sparse retrieval. The API returns the retrieved evidence and exact constructed
+context. `POST /v1/answer` passes that visible context to Gemini through
+LangChain and returns a cited answer.
+
+Short identifier-style queries use strict BM25 matching (for example, `HTTP 429`), while natural-language questions use BM25 OR matching with at least two terms. This lets sparse retrieval contribute useful lexical evidence without requiring every question word or inflection to appear in a single chunk.
 
 `POST /v1/documents` accepts `source`, `text`, and an optional `tenant_id`; it
 generates a UUID-based logical `document_id`. Exact-content uploads receive a
 new logical ID but reuse existing chunk vectors within the same tenant.
 `PUT /v1/documents/{document_id}` creates a new version of that logical document;
 an unchanged normalized-content hash is an idempotent no-op. `POST /v1/query`
-accepts a `question` and optional `limit` (1–10), then returns ranked evidence,
-similarity scores, and a context string. Both are available in the running API's
-`/docs`.
+accepts a `question`, optional `tenant_id`, and optional `limit` (1–10), then
+returns fused evidence with dense/sparse scores and ranks, a retrieval reason,
+and a context string. `score` is the RRF score, not a cosine similarity. Both
+are available in the running API's `/docs`.
 
 Example:
 
@@ -57,6 +65,12 @@ text payload to the current schema with `uv run --extra retrieval
 scripts/reindex_qdrant.py`. This rebuilds the Qdrant collection after reading its
 stored text, preserving the chunks while adding `document_id`, `source`, and
 `chunk_index` to every point.
+
+After upgrading an existing Qdrant collection, build its BM25 companion index
+with `uv run --extra retrieval scripts/reindex_opensearch.py`. This is also the
+repair command if a Qdrant write succeeds but OpenSearch is unavailable. Hybrid
+query and answer requests return HTTP 503 rather than falling back silently to
+dense-only retrieval when OpenSearch or this index is unavailable.
 
 ## Run it
 

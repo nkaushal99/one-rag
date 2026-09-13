@@ -10,6 +10,7 @@ from qdrant_client.models import Distance, FieldCondition, Filter, MatchValue, P
 from one_rag.chunking import chunk_text, section_chunks, sentence_window_chunks
 from one_rag.metadata import DocumentMetadata, PostgresMetadataRepository, SectionMetadata
 from one_rag.settings import Settings, get_settings
+from one_rag.sparse import OpenSearchSparseIndex
 
 
 @lru_cache
@@ -25,6 +26,7 @@ class RetrievalService:
         self.client = QdrantClient(url=self.settings.qdrant_url)
         self.embedder = get_embedder(self.settings.embedding_model)
         self.metadata = PostgresMetadataRepository(self.settings.postgres_dsn)
+        self.sparse = OpenSearchSparseIndex(self.settings)
 
     @staticmethod
     def content_hash(text: str) -> str:
@@ -86,14 +88,19 @@ class RetrievalService:
     def _section_rows(self, sections: list[dict[str, object]]) -> list[SectionMetadata]:
         return [SectionMetadata(str(section["section_id"]), str(section["parent_hash"]), int(section["parent_chunk_index"])) for section in sections]
 
-    def _result(self, point, retrieval_reason: str, score: float | None = None, include_parent_context: bool = False) -> dict[str, object]:
-        return {"document_id": point.payload["document_id"], "source": point.payload["source"], "version": point.payload.get("version", 1), "chunk_index": point.payload["chunk_index"], "text": point.payload["text"], "score": point.score if score is None else score, "parent_chunk_index": point.payload.get("parent_chunk_index"), "child_chunk_index": point.payload.get("child_chunk_index"), "retrieval_reason": retrieval_reason, "parent_text": point.payload.get("parent_text") if include_parent_context else None}
+    def _sync_sparse_document(self, document_id: str, tenant_id: str) -> None:
+        self.sparse.replace_document(tenant_id, document_id, self._document_records(document_id, tenant_id))
+
+    def _result(self, point_id: str, payload: dict[str, object], retrieval_reason: str, score: float, include_parent_context: bool, dense_score: float | None = None, sparse_score: float | None = None, dense_rank: int | None = None, sparse_rank: int | None = None, anchor_chunk_index: int | None = None) -> dict[str, object]:
+        return {"_point_id": point_id, "document_id": payload["document_id"], "source": payload["source"], "version": payload.get("version", 1), "chunk_index": payload["chunk_index"], "text": payload["text"], "score": score, "dense_score": dense_score, "sparse_score": sparse_score, "dense_rank": dense_rank, "sparse_rank": sparse_rank, "parent_chunk_index": payload.get("parent_chunk_index"), "child_chunk_index": payload.get("child_chunk_index"), "retrieval_reason": retrieval_reason, "anchor_chunk_index": anchor_chunk_index, "parent_text": payload.get("parent_text") if include_parent_context else None}
 
     def ingest(self, document_id: str, source: str, text: str) -> int:
         if self.client.collection_exists(self.settings.collection):
             self.client.delete(collection_name=self.settings.collection, points_selector=Filter(must=[FieldCondition(key="document_id", match=MatchValue(value=document_id))]), wait=True)
         chunks = self._chunks(text)
-        return self._write_chunks(document_id, source, chunks, self._vectors([str(chunk["text"]) for chunk in chunks]), "local", self.content_hash(text), 1)
+        count = self._write_chunks(document_id, source, chunks, self._vectors([str(chunk["text"]) for chunk in chunks]), "local", self.content_hash(text), 1)
+        self._sync_sparse_document(document_id, "local")
+        return count
 
     def create_document(self, source: str, text: str, tenant_id: str = "local") -> dict[str, object]:
         content_hash, document_id = self.content_hash(text), f"doc_{uuid4().hex}"
@@ -107,6 +114,7 @@ class RetrievalService:
             vectors, reused = self._vectors([str(chunk["text"]) for chunk in chunks]), 0
         count = self._write_chunks(document_id, source, chunks, vectors, tenant_id, content_hash, 1)
         self.metadata.replace_current(DocumentMetadata(tenant_id, document_id, source, content_hash, 1), self._section_rows(sections))
+        self._sync_sparse_document(document_id, tenant_id)
         return self._outcome(document_id, source, count, 1, content_hash, False, count - reused, reused, 0, len(sections) if not reused else 0, len(sections) if reused else 0, 0)
 
     def _outcome(self, document_id: str, source: str, count: int, version: int, content_hash: str, unchanged: bool, embedded: int, reused: int, deleted: int, sections_embedded: int, sections_reused: int, sections_deleted: int) -> dict[str, object]:
@@ -127,6 +135,7 @@ class RetrievalService:
         chunks = self._chunks(text)
         count = self._write_chunks(document_id, source, chunks, self._vectors([str(chunk["text"]) for chunk in chunks]), tenant_id, content_hash, version)
         self.metadata.replace_current(DocumentMetadata(tenant_id, document_id, source, content_hash, version), [])
+        self._sync_sparse_document(document_id, tenant_id)
         return self._outcome(document_id, source, count, version, content_hash, False, count, 0, len(records), 0, 0, 0)
 
     def update_document(self, document_id: str, source: str, text: str, tenant_id: str = "local") -> dict[str, object]:
@@ -170,24 +179,43 @@ class RetrievalService:
             self.client.delete(collection_name=self.settings.collection, points_selector=PointIdsList(points=list(dict.fromkeys(delete_ids))), wait=True)
         count = self._write_chunks(document_id, source, writes, vectors, tenant_id, content_hash, new_version, point_ids)
         self.metadata.replace_current(DocumentMetadata(tenant_id, document_id, source, content_hash, new_version), self._section_rows(sections))
+        self._sync_sparse_document(document_id, tenant_id)
         return self._outcome(document_id, source, count, new_version, content_hash, False, count - reused_count, reused_count, len(set(delete_ids)), len(new_ids - old_ids), len(reusable), len(changed_ids))
 
-    def search(self, question: str, limit: int, neighbor_count: int = 1, include_parent_context: bool = True) -> list[dict[str, object]]:
+    def search(self, question: str, limit: int, neighbor_count: int = 1, include_parent_context: bool = True, tenant_id: str = "local") -> list[dict[str, object]]:
         if not self.client.collection_exists(self.settings.collection):
             return []
-        points = self.client.query_points(collection_name=self.settings.collection, query=self._vectors([question])[0], query_filter=Filter(must=[FieldCondition(key="is_active", match=MatchValue(value=True))]), limit=limit).points
-        results = [self._result(point, "match", include_parent_context=include_parent_context) for point in points]
+        candidate_limit = self.settings.hybrid_candidate_limit
+        points = self.client.query_points(collection_name=self.settings.collection, query=self._vectors([question])[0], query_filter=Filter(must=[FieldCondition(key="is_active", match=MatchValue(value=True)), FieldCondition(key="tenant_id", match=MatchValue(value=tenant_id))]), limit=candidate_limit).points
+        sparse_hits = self.sparse.search(question, tenant_id, candidate_limit)
+        candidates: dict[str, dict[str, object]] = {}
+        for rank, point in enumerate(points, start=1):
+            point_id = str(point.id)
+            candidates[point_id] = {"payload": dict(point.payload), "dense_score": point.score, "dense_rank": rank, "sparse_score": None, "sparse_rank": None}
+        for rank, hit in enumerate(sparse_hits, start=1):
+            source = dict(hit["_source"])
+            point_id = str(source["qdrant_point_id"])
+            candidate = candidates.setdefault(point_id, {"payload": source, "dense_score": None, "dense_rank": None, "sparse_score": None, "sparse_rank": None})
+            candidate["sparse_score"], candidate["sparse_rank"] = float(hit["_score"]), rank
+        ranked = []
+        for point_id, candidate in candidates.items():
+            dense_rank, sparse_rank = candidate["dense_rank"], candidate["sparse_rank"]
+            score = sum(1 / (self.settings.hybrid_rrf_k + rank) for rank in (dense_rank, sparse_rank) if rank is not None)
+            reason = "dense+sparse" if dense_rank and sparse_rank else "dense" if dense_rank else "sparse"
+            ranked.append((score, point_id, candidate, reason))
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        results = [self._result(point_id, candidate["payload"], reason, score, include_parent_context, candidate["dense_score"], candidate["sparse_score"], candidate["dense_rank"], candidate["sparse_rank"]) for score, point_id, candidate, reason in ranked[:limit]]
         if neighbor_count < 1:
             return results
         records, selected = self._all_records(), {(item["document_id"], item["chunk_index"]) for item in results}
-        for point in points:
-            payload = point.payload
-            siblings = [record for record in records if record.payload.get("document_id") == payload["document_id"] and record.payload.get("parent_chunk_index") == payload.get("parent_chunk_index") and record.payload.get("is_active", True)]
+        for match in list(results):
+            payload = match
+            siblings = [record for record in records if record.payload.get("document_id") == payload["document_id"] and record.payload.get("tenant_id", "local") == tenant_id and record.payload.get("parent_chunk_index") == payload.get("parent_chunk_index") and record.payload.get("is_active", True)]
             siblings.sort(key=lambda record: int(record.payload["child_chunk_index"]))
             for record in siblings:
                 distance, key = abs(int(record.payload["child_chunk_index"]) - int(payload["child_chunk_index"])), (record.payload["document_id"], record.payload["chunk_index"])
                 if 0 < distance <= neighbor_count and key not in selected:
-                    results.append(self._result(record, "neighbor", point.score, include_parent_context)); selected.add(key)
+                    results.append(self._result(str(record.id), dict(record.payload), "neighbor", float(match["score"]), include_parent_context, match["dense_score"], match["sparse_score"], match["dense_rank"], match["sparse_rank"], int(match["chunk_index"]))); selected.add(key)
         return results
 
     def reindex_existing_collection(self) -> int:
@@ -201,4 +229,5 @@ class RetrievalService:
         self.client.create_collection(self.settings.collection, vectors_config=VectorParams(size=len(vectors[0]), distance=Distance.COSINE))
         points = [PointStruct(id=str(uuid5(NAMESPACE_URL, f"{record.payload.get('document_id', 'unknown')}:{index}")), vector=vector, payload={**record.payload, "chunk_index": int(record.payload.get("chunk_index", index)), "is_active": True}) for index, (record, vector) in enumerate(zip(records, vectors))]
         self.client.upsert(collection_name=self.settings.collection, points=points, wait=True)
+        self.sparse.rebuild(self._all_records())
         return len(points)

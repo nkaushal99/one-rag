@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from one_rag.api import app
 from one_rag.context import build_context
 from one_rag.schemas import Evidence
+from one_rag.sparse import SparseSearchUnavailable
 
 
 class FakeRetrievalService:
@@ -16,7 +17,7 @@ class FakeRetrievalService:
     def create_document(self, source: str, text: str, tenant_id: str) -> dict[str, object]:
         return {"document_id": "doc_generated", "source": source, "chunks_indexed": 2, "version": 1, "content_hash": "hash", "embedding_reused": False, "unchanged": False}
 
-    def search(self, question: str, limit: int, neighbor_count: int = 0, include_parent_context: bool = False) -> list[dict[str, object]]:
+    def search(self, question: str, limit: int, neighbor_count: int = 0, include_parent_context: bool = False, tenant_id: str = "local") -> list[dict[str, object]]:
         self.limit = limit
         self.neighbor_count = neighbor_count
         self.include_parent_context = include_parent_context
@@ -24,13 +25,18 @@ class FakeRetrievalService:
 
 
 class FakeAnswerService:
-    def answer(self, question: str, limit: int, neighbor_count: int, include_parent_context: bool) -> dict[str, object]:
+    def answer(self, question: str, limit: int, neighbor_count: int, include_parent_context: bool, tenant_id: str = "local") -> dict[str, object]:
         return {"answer": "Use Account Settings. [handbook.txt | chunk 0]", "context": "[handbook.txt | chunk 0]\nChange credentials in Account Settings.", "evidence": [{"document_id": "handbook", "source": "handbook.txt", "chunk_index": 0, "text": "Change credentials in Account Settings.", "score": 0.91}]}
 
 
 class GeminiUnavailableAnswerService:
-    def answer(self, question: str, limit: int, neighbor_count: int, include_parent_context: bool) -> dict[str, object]:
+    def answer(self, question: str, limit: int, neighbor_count: int, include_parent_context: bool, tenant_id: str = "local") -> dict[str, object]:
         raise RuntimeError("Gemini could not generate an answer with the configured model.")
+
+
+class SparseUnavailableRetrievalService(FakeRetrievalService):
+    def search(self, *args, **kwargs):
+        raise SparseSearchUnavailable("OpenSearch is unavailable.")
 
 
 class ApiTests(TestCase):
@@ -50,6 +56,7 @@ class ApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("[handbook.txt | chunk 0]", response.json()["context"])
         self.assertEqual(response.json()["evidence"][0]["score"], 0.91)
+        self.assertIn("dense_score", response.json()["evidence"][0])
 
     @patch("one_rag.api.RetrievalService")
     def test_query_includes_parent_context_by_default(self, retrieval_service) -> None:
@@ -60,6 +67,11 @@ class ApiTests(TestCase):
         self.assertEqual(service.limit, 3)
         self.assertEqual(service.neighbor_count, 1)
         self.assertTrue(service.include_parent_context)
+
+    @patch("one_rag.api.RetrievalService", SparseUnavailableRetrievalService)
+    def test_query_returns_503_when_sparse_search_is_unavailable(self) -> None:
+        response = self.client.post("/v1/query", json={"question": "INC-48291"})
+        self.assertEqual(response.status_code, 503)
 
     def test_context_includes_an_expanded_parent_only_once(self) -> None:
         evidence = [

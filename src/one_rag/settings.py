@@ -11,6 +11,10 @@ class Settings(BaseSettings):
     redis_url: str = "redis://redis:6379/0"
     qdrant_url: str = "http://qdrant:6333"
     kafka_bootstrap_servers: str = "kafka:9092"
+    opensearch_url: str = "http://opensearch:9200"
+    opensearch_index: str = "one_rag_chunks_v1"
+    hybrid_candidate_limit: int = 20
+    hybrid_rrf_k: int = 60
     collection: str = "documents"
     embedding_model: str = "BAAI/bge-small-en-v1.5"
     llm_provider: str = "gemini"

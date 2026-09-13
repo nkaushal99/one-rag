@@ -90,3 +90,14 @@
 - Before and after: before, a single section edit embedded four children; after,
   the same two-section document embedded two and reused two.
 - ADR: `adr/007-parent-section-hash-updates.md`.
+
+## OPT-006: Fuse semantic and exact-term retrieval
+
+- Problem: dense cosine retrieval can miss incident IDs, error names, protocol codes, and identifier-style tokens that need exact lexical matching.
+- Planned approach: maintain OpenSearch BM25 documents alongside Qdrant vectors, fuse their ranked candidates with reciprocal-rank fusion, and expose both channels in returned evidence.
+- Completion criteria: synchronized sparse index, visible dense/sparse traces, exact-term and semantic tests, and a live Compose dry run including sparse-index rebuild.
+- Completed: 2026-09-14.
+- Implementation: added the OpenSearch 2.19.1 Compose service, a versioned BM25 index with a whitespace/lowercase analyzer that strips terminal punctuation, per-document synchronization, `scripts/reindex_opensearch.py`, and RRF fusion of 20 dense plus 20 sparse candidates using `k=60`.
+- Verification evidence: 34 unit tests passed; the full Compose stack reported all five dependencies ready; the sparse rebuild indexed 799 active Qdrant chunks. A live fixture returned `INC-48291`, `NullPointerException`, `PAYMENT_RETRY_V2`, `HTTP 429`, and `customer_id` as dense+sparse evidence, while the conceptual payment-retry query remained dense-led. A follow-up live P1 acknowledgement/communication question returned its communication chunk as `dense+sparse` with BM25 score `9.661691` at sparse rank 3.
+- Before and after: before, only Qdrant cosine results and one similarity score were visible; after, every primary result exposes fused RRF score, dense/sparse scores and ranks, and a retrieval reason. Exact terms received sparse rank 1 in the live dry run.
+- ADR: `adr/008-stage-7-hybrid-retrieval.md`.

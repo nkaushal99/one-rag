@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "2b606d88-697f-4d43-9a80-a7a5e21e6a55",
     "name": "One RAG",
-    "description": "Runnable local requests for the Stage 1 ingestion and semantic retrieval API.",
+    "description": "Runnable local requests for hybrid dense Qdrant and BM25 OpenSearch retrieval.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -64,6 +64,29 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"question\": \"How can I reset my password?\",\n  \"limit\": 3\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/query"
+          },
+          "response": []
+        },
+        {
+          "name": "Query exact incident ID",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"question\": \"INC-48291\",\n  \"limit\": 3\n}",
               "options": {
                 "raw": {
                   "language": "json"
