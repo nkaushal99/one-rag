@@ -3,7 +3,8 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from one_rag.api import app, build_context
+from one_rag.api import app
+from one_rag.context import build_context
 from one_rag.schemas import Evidence
 
 
@@ -16,6 +17,16 @@ class FakeRetrievalService:
     def search(self, question: str, limit: int, neighbor_count: int = 0, include_parent_context: bool = False) -> list[dict[str, object]]:
         self.include_parent_context = include_parent_context
         return [{"document_id": "handbook", "source": "handbook.txt", "chunk_index": 0, "text": "Change credentials in Account Settings.", "score": 0.91}]
+
+
+class FakeAnswerService:
+    def answer(self, question: str, limit: int, neighbor_count: int, include_parent_context: bool) -> dict[str, object]:
+        return {"answer": "Use Account Settings. [handbook.txt | chunk 0]", "context": "[handbook.txt | chunk 0]\nChange credentials in Account Settings.", "evidence": [{"document_id": "handbook", "source": "handbook.txt", "chunk_index": 0, "text": "Change credentials in Account Settings.", "score": 0.91}]}
+
+
+class GeminiUnavailableAnswerService:
+    def answer(self, question: str, limit: int, neighbor_count: int, include_parent_context: bool) -> dict[str, object]:
+        raise RuntimeError("Gemini could not generate an answer with the configured model.")
 
 
 class ApiTests(TestCase):
@@ -52,3 +63,16 @@ class ApiTests(TestCase):
         context = build_context(evidence)
         self.assertEqual(context.count("Full parent."), 1)
         self.assertIn("parent 2", context)
+
+    @patch("one_rag.api.AnswerService", FakeAnswerService)
+    def test_answer_returns_llm_text_with_the_retrieved_context(self) -> None:
+        response = self.client.post("/v1/answer", json={"question": "Where do I change credentials?"})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Account Settings", response.json()["answer"])
+        self.assertIn("handbook.txt", response.json()["context"])
+
+    @patch("one_rag.api.AnswerService", GeminiUnavailableAnswerService)
+    def test_answer_returns_a_safe_provider_error(self) -> None:
+        response = self.client.post("/v1/answer", json={"question": "Where do I change credentials?"})
+        self.assertEqual(response.status_code, 502)
+        self.assertIn("Gemini", response.json()["detail"])

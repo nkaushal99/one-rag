@@ -5,25 +5,13 @@ import psycopg
 import redis
 from fastapi import FastAPI, HTTPException, Response, status
 
+from one_rag.answering import AnswerService
+from one_rag.context import build_context
 from one_rag.retrieval import RetrievalService
-from one_rag.schemas import DocumentIn, DocumentUpdateIn, Evidence, IngestedDocument, QueryIn, QueryResult
+from one_rag.schemas import AnswerResult, DocumentIn, DocumentUpdateIn, Evidence, IngestedDocument, QueryIn, QueryResult
 from one_rag.settings import get_settings
 
 app = FastAPI(title="One RAG", version="0.1.0")
-
-
-def build_context(evidence: list[Evidence]) -> str:
-    """Keep expanded parent context once, while evidence retains every child match."""
-    blocks = []
-    included = set()
-    for item in evidence:
-        key = (item.document_id, item.parent_chunk_index) if item.parent_text else (item.document_id, item.chunk_index)
-        if key in included:
-            continue
-        included.add(key)
-        label = f"parent {item.parent_chunk_index}" if item.parent_text else f"chunk {item.chunk_index}"
-        blocks.append(f"[{item.source} | {label}]\n{item.parent_text or item.text}")
-    return "\n\n".join(blocks)
 
 
 @app.get("/health/live", tags=["health"])
@@ -89,3 +77,12 @@ def query_documents(query: QueryIn) -> QueryResult:
     evidence = [Evidence(**item) for item in RetrievalService().search(query.question, query.limit, query.neighbor_count, query.include_parent_context)]
     context = build_context(evidence)
     return QueryResult(question=query.question, context=context, evidence=evidence)
+
+
+@app.post("/v1/answer", response_model=AnswerResult, tags=["rag"])
+def answer_question(query: QueryIn) -> AnswerResult:
+    try:
+        result = AnswerService().answer(query.question, query.limit, query.neighbor_count, query.include_parent_context)
+    except (RuntimeError, ValueError) as error:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error)) from error
+    return AnswerResult(question=query.question, **result)

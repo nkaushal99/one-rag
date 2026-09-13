@@ -44,3 +44,7 @@ class QueryResult(BaseModel):
     question: str
     context: str
     evidence: list[Evidence]
+
+
+class AnswerResult(QueryResult):
+    answer: str

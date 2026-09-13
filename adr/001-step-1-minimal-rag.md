@@ -10,15 +10,14 @@ The first milestone is to learn the RAG pipeline rather than hide it behind a fr
 
 ## Decision
 
-Use a Python CLI, UTF-8 text files, and an explicit chunking strategy selected
+Use an HTTP API, UTF-8 text, and an explicit chunking strategy selected
 from the environment. Start with sentence chunks, then compare section chunks,
 paragraph chunks with headings, and sentence windows with overlap. Use local
 sentence-transformer embeddings, and a local Qdrant container. Print retrieved
 chunks with their source and score.
 
-Each indexing run deletes and recreates the collection before inserting the
-current chunks. This prevents deleted or edited source files from leaving stale
-chunks in search results.
+The API assigns document identities and updates chunk versions so edited source
+text does not leave stale chunks in search results.
 
 Do not add an API, UI, LLM, LangChain, hybrid search, reranking, metadata
 filtering, or asynchronous ingestion in this milestone.

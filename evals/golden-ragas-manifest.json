@@ -1,0 +1,25 @@
+{
+  "dataset_version": "1.0.0",
+  "judge": {
+    "model": "gemini-2.5-flash-lite",
+    "temperature": 0
+  },
+  "embedding": {
+    "model": "BAAI/bge-small-en-v1.5",
+    "revision": "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
+  },
+  "metrics": [
+    "context_precision",
+    "context_recall",
+    "faithfulness",
+    "answer_correctness",
+    "answer_relevancy"
+  ],
+  "configurations": [
+    {"name": "sentence_window_top1", "chunking_strategy": "sentence_window", "limit": 1, "neighbor_count": 0, "include_parent_context": false},
+    {"name": "parent_child_top1", "chunking_strategy": "parent_child", "limit": 1, "neighbor_count": 0, "include_parent_context": false},
+    {"name": "parent_child_neighbor_child", "chunking_strategy": "parent_child", "limit": 1, "neighbor_count": 1, "include_parent_context": false},
+    {"name": "parent_child_neighbor_parent", "chunking_strategy": "parent_child", "limit": 1, "neighbor_count": 1, "include_parent_context": true},
+    {"name": "parent_child_top3_neighbor_parent", "chunking_strategy": "parent_child", "limit": 3, "neighbor_count": 1, "include_parent_context": true}
+  ]
+}

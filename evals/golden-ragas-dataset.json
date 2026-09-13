@@ -1,0 +1,54 @@
+[
+  {
+    "id": "messaging-platform",
+    "answerable": true,
+    "question": "Which asynchronous messaging platform is the default for new systems?",
+    "reference_answer": "Kafka is the default asynchronous messaging platform for new systems.",
+    "reference_context": "Kafka is the default asynchronous messaging platform for new systems."
+  },
+  {
+    "id": "rabbitmq-exceptions",
+    "answerable": true,
+    "question": "Which systems are allowed to use RabbitMQ?",
+    "reference_answer": "Only Invoice Exporter and Legacy Email Bridge are allowed to use RabbitMQ.",
+    "reference_context": "RabbitMQ is permitted only for Invoice Exporter and Legacy Email Bridge."
+  },
+  {
+    "id": "kafka-attempts",
+    "answerable": true,
+    "question": "How many total Kafka processing attempts are allowed, including the original attempt?",
+    "reference_answer": "Six total attempts are allowed, including the original attempt.",
+    "reference_context": "Kafka processing allows six total attempts including the original attempt."
+  },
+  {
+    "id": "payment-retries",
+    "answerable": true,
+    "question": "Why should payment processing not use a generic three-retry policy?",
+    "reference_answer": "The three-retry statement is historical and is not the current generic payment policy; payment retry behavior is domain-specific and must not be inferred from that legacy wording.",
+    "reference_context": "The old three-retry payment policy is historical documentation, not the current generic policy; payment retry behavior is domain-specific."
+  },
+  {
+    "id": "idempotency-ttl",
+    "answerable": true,
+    "question": "What are the default and Payment idempotency-key retention periods?",
+    "reference_answer": "The default idempotency-key retention period is 24 hours, while Payment retains keys for 7 days.",
+    "reference_context": "Default idempotency-key retention is 24 hours. Payment retains idempotency keys for 7 days."
+  },
+  {
+    "id": "p1-communication",
+    "answerable": true,
+    "question": "What are the P1 incident communication deadlines?",
+    "reference_answer": "For a P1, communicate internally within 10 minutes, communicate externally within 20 minutes when customer-visible, and provide updates every 30 minutes.",
+    "reference_context": "P1 communication requires an internal update within 10 minutes, an external update within 20 minutes if customer-visible, and updates every 30 minutes."
+  },
+  {
+    "id": "negative-ceo",
+    "answerable": false,
+    "question": "Who is the CEO of the enterprise platform?"
+  },
+  {
+    "id": "negative-kubernetes-version",
+    "answerable": false,
+    "question": "Which Kubernetes version does the enterprise platform run?"
+  }
+]
